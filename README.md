@@ -1,92 +1,133 @@
-This fork add support for Standard Zip Encryption.
+## zip-xxh3
 
-The work is based on https://github.com/alexmullins/zip
+`yeka/zip` is a fork of Go's `archive/zip` that adds support for Standard Zip Encryption.
+This is a fork of `yeka/zip` that adds zlib Compression & Decompression methods (using `4kills/go-zlib`) for optimised zipping, and adds support for XXH3 64 bit checksum (using zeebo/xxh3).
 
-Available encryption:
+> XXhash3 is a extremely fast, non-cryptographic hash function. It is designed to be used in high-performance applications where speed is important. It has excellent collision distribution. XXhash3 is so fast that it is often bottlenecked by how fast you can read bytes off the disk and not the algorithm itself.
 
+> from 4kills/go-zlib:
+> This ultra fast Go zlib library wraps the original zlib library written in C by Jean-loup Gailly and Mark Adler using cgo.
+
+For the library to work, you need cgo, zlib (which is used by this library under the hood), and pkg-config (to link zlib).
+You must build your application with the `zlib_c` build tag to enable the CGo-based implementation.
+
+```bash
+go build -tags=zlib_c
 ```
-zip.StandardEncryption
-zip.AES128Encryption
-zip.AES192Encryption
-zip.AES256Encryption
-```
 
-## Warning
+## Example Usage
 
-Zip Standard Encryption isn't actually secure.
-Unless you have to work with it, please use AES encryption instead.
+### Writing a zip file:
 
-## Example Encrypt Zip
-
-```
+```go
 package main
 
 import (
 	"bytes"
-	"io"
-	"log"
-	"os"
-
-	"github.com/yeka/zip"
-)
-
-func main() {
-	contents := []byte("Hello World")
-	fzip, err := os.Create(`./test.zip`)
-	if err != nil {
-		log.Fatalln(err)
-	}
-	zipw := zip.NewWriter(fzip)
-	defer zipw.Close()
-	w, err := zipw.Encrypt(`test.txt`, `golang`, zip.AES256Encryption)
-	if err != nil {
-		log.Fatal(err)
-	}
-	_, err = io.Copy(w, bytes.NewReader(contents))
-	if err != nil {
-		log.Fatal(err)
-	}
-	zipw.Flush()
-}
-```
-
-## Example Decrypt Zip
-
-```
-package main
-
-import (
 	"fmt"
 	"io/ioutil"
 	"log"
 
-	"github.com/yeka/zip"
+	"github.com/abyii/zip-xxh3"
 )
 
 func main() {
-	r, err := zip.OpenReader("encrypted.zip")
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+
+	content := []byte("This is the content of the file, compressed with zlib-ng!")
+
+	f, err := w.CreateHeader(&zip.FileHeader{
+		Name:   "my-file.txt",
+		Method: zip.Zlib, // Use Zlib compression
+	})
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer r.Close()
+
+	_, err = f.Write(content)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if err := w.Close(); err != nil {
+		log.Fatal(err)
+	}
+
+	// You can now write buf to a file, e.g., ioutil.WriteFile("archive.zip", buf.Bytes(), 0644)
+	fmt.Println("Zip file created successfully.")
+}
+```
+
+### Reading and Verifying a Zip File
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"io/ioutil"
+	"log"
+
+	"github.com/abyii/zip-xxh3"
+)
+
+func main() {
+	// Assume 'zipData' is a []byte containing the zip archive from the previous example
+	var zipData []byte // In a real scenario, you would read this from a file
+
+	r, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	for _, f := range r.File {
-		if f.IsEncrypted() {
-			f.SetPassword("12345")
+		fmt.Printf("File: %s\n", f.Name)
+
+		// Verify the xxh3 checksum if it exists
+		if f.XXH3 != 0 {
+			if err := f.VerifyXXH3(); err != nil {
+				log.Fatalf("XXH3 checksum for %s failed: %v", f.Name, err)
+			}
+			fmt.Printf("  - XXH3 checksum verified!\n")
 		}
 
-		r, err := f.Open()
+		rc, err := f.Open()
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		buf, err := ioutil.ReadAll(r)
+		content, err := ioutil.ReadAll(rc)
 		if err != nil {
 			log.Fatal(err)
 		}
-		defer r.Close()
+		rc.Close()
 
-		fmt.Printf("Size of %v: %v byte(s)\n", f.Name, len(buf))
+		fmt.Printf("  - Content: %s\n", content)
 	}
 }
 ```
+
+### Encrypting a zip file
+
+```go
+// ...
+f, err := w.CreateHeader(&zip.FileHeader{
+    Name: "my-super-secret-file.txt",
+    Method: zip.Deflate,
+    Encryption: zip.AES256Encryption,
+})
+// ...
+```
+
+### Decrypting a zip file
+
+```go
+// ...
+f.SetPassword("my-super-secret-password")
+r, err := f.Open()
+// ...
+```
+
+for more info, pls refer to the original `yeka/zip` README.md
