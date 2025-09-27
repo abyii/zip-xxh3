@@ -18,6 +18,56 @@ import (
 	"time"
 )
 
+func TestXXH3AndZlib(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewWriter(&buf)
+
+	content := []byte(strings.Repeat("content for testing xxh3 and zlib", 1000))
+
+	f, err := w.CreateHeader(&FileHeader{
+		Name:   "xxh3_zlib_test.txt",
+		Method: Zlib,
+	})
+	if err != nil {
+		t.Fatalf("CreateHeader: %v", err)
+	}
+	_, err = f.Write(content)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// Read the zip archive back
+	r, err := NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatalf("NewReader: %v", err)
+	}
+	// Check that we have one file
+	if len(r.File) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(r.File))
+	}
+	zipFile := r.File[0]
+	// Verify the xxh3 checksum
+	if err := zipFile.VerifyXXH3(); err != nil {
+		t.Fatalf("VerifyXXH3: %v", err)
+	}
+	// Open the file from the archive
+	rc, err := zipFile.Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+	// Read the content and verify it's correct
+	readContent, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Equal(content, readContent) {
+		t.Fatal("content does not match")
+	}
+}
+
 func TestOver65kFiles(t *testing.T) {
 	buf := new(bytes.Buffer)
 	w := NewWriter(buf)

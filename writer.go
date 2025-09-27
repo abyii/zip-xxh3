@@ -11,6 +11,8 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
+
+	"github.com/zeebo/xxh3"
 )
 
 // TODO(adg): support zip file comments
@@ -78,6 +80,17 @@ func (w *Writer) Close() error {
 		b.uint16(h.ModifiedTime)
 		b.uint16(h.ModifiedDate)
 		b.uint32(h.CRC32)
+
+		// adding xxh3
+		if h.XXH3 != 0 {
+			var buf [12]byte
+			eb := writeBuf(buf[:])
+			eb.uint16(xxh3ExtraId)
+			eb.uint16(8) // size = 1x uint64
+			eb.uint64(h.XXH3)
+			h.Extra = append(h.Extra, buf[:]...)
+		}
+
 		if h.isZip64() || h.offset > uint32max {
 			// the file needs a zip64 header. store maxint in both
 			// 32 bit size fields (and offset later) to signal that the
@@ -220,6 +233,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		zipw:      w.cw,
 		compCount: &countWriter{w: w.cw},
 		crc32:     crc32.NewIEEE(),
+		xxh3:      xxh3.New(),
 	}
 	// Get the compressor before possibly changing Method to 99 due to password
 	comp := compressor(fh.Method)
@@ -299,6 +313,7 @@ type fileWriter struct {
 	comp      io.WriteCloser
 	compCount *countWriter
 	crc32     hash.Hash32
+	xxh3      hash.Hash64
 	closed    bool
 
 	hmac hash.Hash // possible hmac used for authentication when encrypting
@@ -309,6 +324,7 @@ func (w *fileWriter) Write(p []byte) (int, error) {
 		return 0, errors.New("zip: write to closed file")
 	}
 	w.crc32.Write(p)
+	w.xxh3.Write(p)
 	return w.rawCount.Write(p)
 }
 
@@ -335,6 +351,7 @@ func (w *fileWriter) close() error {
 	if !fh.IsEncrypted() || fh.encryption == StandardEncryption {
 		fh.CRC32 = w.crc32.Sum32()
 	}
+	fh.XXH3 = w.xxh3.Sum64()
 	fh.CompressedSize64 = uint64(w.compCount.count)
 	fh.UncompressedSize64 = uint64(w.rawCount.count)
 

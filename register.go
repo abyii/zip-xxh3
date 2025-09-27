@@ -10,6 +10,8 @@ import (
 	"io"
 	"io/ioutil"
 	"sync"
+
+	"github.com/4kills/go-zlib"
 )
 
 // A Compressor returns a compressing writer, writing to the
@@ -66,13 +68,33 @@ var (
 	compressors = map[uint16]Compressor{
 		Store:   func(w io.Writer) (io.WriteCloser, error) { return &nopCloser{w}, nil },
 		Deflate: func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w), nil },
+		Zlib:    func(w io.Writer) (io.WriteCloser, error) { return zlib.NewWriter(w), nil },
 	}
 
 	decompressors = map[uint16]Decompressor{
 		Store:   ioutil.NopCloser,
 		Deflate: flate.NewReader,
+		Zlib: func(r io.Reader) io.ReadCloser {
+			rc, err := zlib.NewReader(r)
+			if err != nil {
+				return &errorReader{err: err}
+			}
+			return rc
+		},
 	}
 )
+
+type errorReader struct {
+	err error
+}
+
+func (r *errorReader) Read(p []byte) (n int, err error) {
+	return 0, r.err
+}
+
+func (r *errorReader) Close() error {
+	return nil
+}
 
 // RegisterDecompressor allows custom decompressors for a specified method ID.
 func RegisterDecompressor(method uint16, d Decompressor) {

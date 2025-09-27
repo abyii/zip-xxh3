@@ -13,12 +13,15 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+
+	"github.com/zeebo/xxh3"
 )
 
 var (
 	ErrFormat    = errors.New("zip: not a valid zip file")
 	ErrAlgorithm = errors.New("zip: unsupported compression algorithm")
 	ErrChecksum  = errors.New("zip: checksum error")
+	ErrXXH3      = errors.New("zip: xxh3 checksum error")
 )
 
 type Reader struct {
@@ -129,6 +132,26 @@ func (f *File) DataOffset() (offset int64, err error) {
 		return
 	}
 	return f.headerOffset + bodyOffset, nil
+}
+
+func (f *File) VerifyXXH3() error {
+	if f.XXH3 == 0 {
+		return nil
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	h := xxh3.New()
+	_, err = io.Copy(h, rc)
+	if err != nil {
+		return err
+	}
+	if h.Sum64() != f.XXH3 {
+		return ErrXXH3
+	}
+	return nil
 }
 
 // Open returns a ReadCloser that provides access to the File's contents.
@@ -311,6 +334,10 @@ func readDirectoryHeader(f *File, r io.Reader) error {
 				f.aesStrength = eb.uint8()
 				// set the actual compression method.
 				f.Method = eb.uint16()
+			case xxh3ExtraId:
+				if len(eb) >= 8 {
+					f.XXH3 = eb.uint64()
+				}
 			}
 			b = b[size:]
 		}

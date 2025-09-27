@@ -32,6 +32,7 @@ import (
 const (
 	Store   uint16 = 0
 	Deflate uint16 = 8
+	Zlib    uint16 = 9
 )
 
 const (
@@ -67,6 +68,7 @@ const (
 	// extra header id's
 	zip64ExtraId     = 0x0001 // zip64 Extended Information Extra Field
 	winzipAesExtraId = 0x9901 // winzip AES Extra Field
+	xxh3ExtraId      = 0x7878 // xxh3 Extra Field - 0x7878 meaning xx
 )
 
 // FileHeader describes a file within a zip file.
@@ -92,6 +94,7 @@ type FileHeader struct {
 	Extra              []byte
 	ExternalAttrs      uint32 // Meaning depends on CreatorVersion
 	Comment            string
+	XXH3               uint64
 
 	// DeferAuth being set to true will delay hmac auth/integrity
 	// checks when decrypting a file meaning the reader will be
