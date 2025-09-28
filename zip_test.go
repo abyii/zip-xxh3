@@ -11,22 +11,21 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/ioutil"
 	"sort"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestXXH3AndZlib(t *testing.T) {
+func TestXXH3AndDeflate(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(&buf)
 
-	content := []byte(strings.Repeat("content for testing xxh3 and zlib", 1000))
+	content := []byte(strings.Repeat("content for testing xxh3 and deflate", 1000))
 
 	f, err := w.CreateHeader(&FileHeader{
-		Name:   "xxh3_zlib_test.txt",
-		Method: Zlib,
+		Name:   "xxh3_deflate_test.txt",
+		Method: Deflate,
 	})
 	if err != nil {
 		t.Fatalf("CreateHeader: %v", err)
@@ -63,55 +62,6 @@ func TestXXH3AndZlib(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if !bytes.Equal(content, readContent) {
-		t.Fatal("content does not match")
-	}
-}
-
-func TestZlibNG(t *testing.T) {
-	var buf bytes.Buffer
-	w := NewWriter(&buf)
-
-	content := []byte(strings.Repeat("Hello from Saito!", 1000))
-
-	f, err := w.CreateHeader(&FileHeader{
-		Name:   "test_saito.txt",
-		Method: ZlibNG,
-	})
-	if err != nil {
-		t.Fatalf("CreateHeader: %v", err)
-	}
-
-	_, err = f.Write(content)
-	if err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-
-	if err := w.Close(); err != nil {
-		t.Fatalf("Writer.Close: %v", err)
-	}
-
-	r, err := NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
-	if err != nil {
-		t.Fatalf("NewReader: %v", err)
-	}
-
-	if len(r.File) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(r.File))
-	}
-	zipFile := r.File[0]
-
-	rc, err := zipFile.Open()
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer rc.Close()
-
-	readContent, err := ioutil.ReadAll(rc)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-
 	if !bytes.Equal(content, readContent) {
 		t.Fatal("content does not match")
 	}
@@ -382,7 +332,7 @@ func testZip64(t testing.TB, size int64) *rleBuffer {
 			t.Fatal("read:", err)
 		}
 	}
-	gotEnd, err := ioutil.ReadAll(rc)
+	gotEnd, err := io.ReadAll(rc)
 	if err != nil {
 		t.Fatal("read end:", err)
 	}
