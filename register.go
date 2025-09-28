@@ -8,10 +8,10 @@ import (
 	"compress/flate"
 	"errors"
 	"io"
-	"io/ioutil"
 	"sync"
 
-	"github.com/4kills/go-zlib"
+	zlib "github.com/4kills/go-zlib"
+	zlibng "github.com/yasushi-saito/zlibng"
 )
 
 // A Compressor returns a compressing writer, writing to the
@@ -69,13 +69,27 @@ var (
 		Store:   func(w io.Writer) (io.WriteCloser, error) { return &nopCloser{w}, nil },
 		Deflate: func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w), nil },
 		Zlib:    func(w io.Writer) (io.WriteCloser, error) { return zlib.NewWriter(w), nil },
+		ZlibNG: func(w io.Writer) (io.WriteCloser, error) {
+			writer, err := zlibng.NewWriter(w)
+			if err != nil {
+				return nil, err
+			}
+			return writer, nil
+		},
 	}
 
 	decompressors = map[uint16]Decompressor{
-		Store:   ioutil.NopCloser,
+		Store:   io.NopCloser,
 		Deflate: flate.NewReader,
 		Zlib: func(r io.Reader) io.ReadCloser {
 			rc, err := zlib.NewReader(r)
+			if err != nil {
+				return &errorReader{err: err}
+			}
+			return rc
+		},
+		ZlibNG: func(r io.Reader) io.ReadCloser {
+			rc, err := zlibng.NewReader(r)
 			if err != nil {
 				return &errorReader{err: err}
 			}

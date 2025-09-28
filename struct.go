@@ -33,6 +33,7 @@ const (
 	Store   uint16 = 0
 	Deflate uint16 = 8
 	Zlib    uint16 = 9
+	ZlibNG  uint16 = 10
 )
 
 const (
