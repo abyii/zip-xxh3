@@ -16,7 +16,6 @@ import (
 )
 
 // TODO(adg): support zip file comments
-// TODO(adg): support specifying deflate level
 
 // Writer implements a zip file writer.
 type Writer struct {
@@ -190,7 +189,7 @@ func (w *Writer) Close() error {
 	return w.cw.w.(*bufio.Writer).Flush()
 }
 
-// Create adds a file to the zip file using the provided name.
+// Create adds a file to the zip file using the provided name, compression and encryption options.
 // It returns a Writer to which the file contents should be written.
 // The name must be a relative path: it must not start with a drive
 // letter (e.g. C:) or leading slash, and only forward slashes are
