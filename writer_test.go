@@ -124,7 +124,7 @@ func TestWriterOffset(t *testing.T) {
 func TestWriterFlush(t *testing.T) {
 	var buf bytes.Buffer
 	w := NewWriter(struct{ io.Writer }{&buf})
-	_, err := w.Create("foo")
+	_, err := w.Create("foo", Store, 0, NoEncryption, "")
 	if err != nil {
 		t.Fatal(err)
 	}

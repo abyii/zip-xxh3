@@ -22,6 +22,7 @@ import (
 type EncryptionMethod int
 
 const (
+	NoEncryption       EncryptionMethod = 0
 	StandardEncryption EncryptionMethod = 1
 	AES128Encryption   EncryptionMethod = 2
 	AES192Encryption   EncryptionMethod = 3
@@ -467,18 +468,3 @@ func (h *FileHeader) SetPassword(password string) {
 // PasswordFn is a function that returns the password
 // as a byte slice
 type passwordFn func() []byte
-
-// Encrypt adds a file to the zip file using the provided name.
-// It returns a Writer to which the file contents should be written. File
-// contents will be encrypted with AES-256 using the given password. The
-// file's contents must be written to the io.Writer before the next call
-// to Create, CreateHeader, or Close.
-func (w *Writer) Encrypt(name string, password string, enc EncryptionMethod) (io.Writer, error) {
-	fh := &FileHeader{
-		Name:   name,
-		Method: Deflate,
-	}
-	fh.SetPassword(password)
-	fh.SetEncryptionMethod(enc)
-	return w.CreateHeader(fh)
-}

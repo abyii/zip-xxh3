@@ -79,10 +79,19 @@ type FileHeader struct {
 	// are allowed.
 	Name string
 
-	CreatorVersion     uint16
-	ReaderVersion      uint16
-	Flags              uint16
-	Method             uint16
+	CreatorVersion uint16
+	ReaderVersion  uint16
+	Flags          uint16
+	Method         uint16 // Compression method used to compress the file.
+
+	// CompressionLevel is the compression level to use.
+	// This is only valid for Deflate compression.
+	// -1 means default compression level (5),
+	// 0 means no compression,
+	// 1 means best speed compression,
+	// 9 means best compression.
+	CompressionLevel int
+
 	ModifiedTime       uint16 // MS-DOS time
 	ModifiedDate       uint16 // MS-DOS date
 	CRC32              uint32

@@ -5,10 +5,11 @@
 package zip
 
 import (
-	"compress/flate"
 	"errors"
 	"io"
 	"sync"
+
+	"github.com/klauspost/compress/flate"
 )
 
 // A Compressor returns a compressing writer, writing to the
@@ -23,12 +24,12 @@ type Decompressor func(io.Reader) io.ReadCloser
 
 var flateWriterPool sync.Pool
 
-func newFlateWriter(w io.Writer) io.WriteCloser {
+func newFlateWriter(w io.Writer, level int) io.WriteCloser {
 	fw, ok := flateWriterPool.Get().(*flate.Writer)
 	if ok {
 		fw.Reset(w)
 	} else {
-		fw, _ = flate.NewWriter(w, 5)
+		fw, _ = flate.NewWriter(w, level)
 	}
 	return &pooledFlateWriter{fw: fw}
 }
@@ -63,13 +64,11 @@ var (
 	mu sync.RWMutex // guards compressor and decompressor maps
 
 	compressors = map[uint16]Compressor{
-		Store:   func(w io.Writer) (io.WriteCloser, error) { return &nopCloser{w}, nil },
-		Deflate: func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w), nil },
+		// empty map to allow for custom compressors
 	}
 
 	decompressors = map[uint16]Decompressor{
-		Store:   io.NopCloser,
-		Deflate: flate.NewReader,
+		// empty map to allow for custom decompressors
 	}
 )
 
@@ -96,14 +95,28 @@ func RegisterCompressor(method uint16, comp Compressor) {
 	compressors[method] = comp
 }
 
-func compressor(method uint16) Compressor {
+func compressor(method uint16, level int) Compressor {
 	mu.RLock()
 	defer mu.RUnlock()
-	return compressors[method]
+	switch method {
+	case Store:
+		return func(w io.Writer) (io.WriteCloser, error) { return &nopCloser{w}, nil }
+	case Deflate:
+		return func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w, level), nil }
+	default:
+		return compressors[method]
+	}
 }
 
 func decompressor(method uint16) Decompressor {
 	mu.RLock()
 	defer mu.RUnlock()
-	return decompressors[method]
+	switch method {
+	case Store:
+		return io.NopCloser
+	case Deflate:
+		return flate.NewReader
+	default:
+		return decompressors[method]
+	}
 }

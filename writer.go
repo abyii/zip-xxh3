@@ -197,10 +197,30 @@ func (w *Writer) Close() error {
 // allowed.
 // The file's contents must be written to the io.Writer before the next
 // call to Create, CreateHeader, or Close.
-func (w *Writer) Create(name string) (io.Writer, error) {
+func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMethod, password string) (io.Writer, error) {
+	if method == Deflate && level == 0 {
+		method = Store
+	}
+	if method == Store && level != 0 {
+		return nil, errors.New("archive/zip: invalid compression level for store method. Should be 0.")
+	}
+	if enc != NoEncryption && method != Deflate {
+		return nil, errors.New("archive/zip: encryption method only supported for deflate method.")
+	}
+	if enc != NoEncryption && password == "" {
+		return nil, errors.New("archive/zip: password required for encryption method.")
+	}
+	if password != "" && enc == NoEncryption {
+		return nil, errors.New("archive/zip: encryption method required for password.")
+	}
 	header := &FileHeader{
-		Name:   name,
-		Method: Deflate,
+		Name:             name,
+		Method:           method,
+		CompressionLevel: level,
+	}
+	if enc != NoEncryption {
+		header.SetEncryptionMethod(enc)
+		header.SetPassword(password)
 	}
 	return w.CreateHeader(header)
 }
@@ -236,7 +256,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 		xxh3:      xxh3.New(),
 	}
 	// Get the compressor before possibly changing Method to 99 due to password
-	comp := compressor(fh.Method)
+	comp := compressor(fh.Method, fh.CompressionLevel)
 	if comp == nil {
 		return nil, ErrAlgorithm
 	}
