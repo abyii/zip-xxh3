@@ -1,123 +1,96 @@
 ## zip-xxh3
 
 `yeka/zip` is a fork of Go's `archive/zip` that adds support for Standard Zip Encryption.
-This is a fork of `yeka/zip` that adds support for XXH3 64 bit checksum (using zeebo/xxh3).
+This is a fork of `yeka/zip` that:
+ - supports specifying compression level.
+ - replaces compress/flate with klauspost/compress/flate which is an optimised version of compress/flate, and implements better gradient accross different compression levels.
+ - adds support for XXH3 64 bit checksum (using zeebo/xxh3).
 
 > XXhash3 is a extremely fast, non-cryptographic hash function. It is designed to be used in high-performance applications where speed is important. It has excellent collision distribution. XXhash3 is so fast that it is often bottlenecked by how fast you can read bytes off the disk and not the algorithm itself.
 
-## Example Usage
+## Installation
 
-### Writing a zip file:
-
-```go
-package main
-
-import (
-	"bytes"
-	"fmt"
-	"io/ioutil"
-	"log"
-
-	"github.com/abyii/zip-xxh3"
-)
-
-func main() {
-	var buf bytes.Buffer
-	w := zip.NewWriter(&buf)
-
-	content := []byte("This is the content of the file, compressed with zlib-ng!")
-
-	f, err := w.CreateHeader(&zip.FileHeader{
-		Name:   "my-file.txt",
-		Method: zip.Deflate,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	_, err = f.Write(content)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	if err := w.Close(); err != nil {
-		log.Fatal(err)
-	}
-
-	// You can now write buf to a file, e.g., ioutil.WriteFile("archive.zip", buf.Bytes(), 0644)
-	fmt.Println("Zip file created successfully.")
-}
+```bash
+go get github.com/abyii/zip-xxh3
 ```
 
-### Reading and Verifying a Zip File
+## Usage
+
+
+this package maintains a similar API to the standard `archive/zip` library but extends it with encryption capabilities via the `Create` method.
+
+### `Create` function
+
+You can add files to the archive using the `Create` method on a `zip.Writer`.
+
+```go
+func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMethod, password string) (io.Writer, error)
+```
+
+**Arguments:**
+
+*   `name`: The name of the file within the zip archive (e.g., "my_file.txt").
+*   `method`: The compression method to use.
+    *   `zip.Store`: No compression.
+    *   `zip.Deflate`: Compresses the file data.
+*   `level`: The compression level for the `Deflate` method. It ranges from -1 (default) to 9 (best compression). For `zip.Store`, this should be 0.
+*   `enc`: The encryption method.
+    *   `zip.NoEncryption`: No encryption.
+    *   `zip.StandardEncryption`: Standard Zip 2.0 encryption.
+    *   `zip.AES128Encryption`: AES-128 encryption.
+    *   `zip.AES192Encryption`: AES-192 encryption.
+    *   `zip.AES256Encryption`: AES-256 encryption.
+*   `password`: The password to use for encryption. This is required if an encryption method other than `NoEncryption` is chosen.
+
+**Example:**
+
+This example shows how to create a zip file with one compressed and encrypted file.
 
 ```go
 package main
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"log"
+	"os"
 
 	"github.com/abyii/zip-xxh3"
 )
 
 func main() {
-	// Assume 'zipData' is a []byte containing the zip archive from the previous example
-	var zipData []byte // In a real scenario, you would read this from a file
+	// Create a buffer to write our archive to.
+	buf := new(bytes.Buffer)
 
-	r, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	// Create a new zip archive.
+	zipWriter := zip.NewWriter(buf)
+
+	// Add a file to the archive.
+	// The file will be named "hello.txt", compressed with Deflate,
+	// and encrypted with AES-256.
+	writer, err := zipWriter.Create("hello.txt", zip.Deflate, -1, zip.AES256Encryption, "supersecret")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	for _, f := range r.File {
-		fmt.Printf("File: %s\n", f.Name)
-
-		// Verify the xxh3 checksum if it exists
-		if f.XXH3 != 0 {
-			if err := f.VerifyXXH3(); err != nil {
-				log.Fatalf("XXH3 checksum for %s failed: %v", f.Name, err)
-			}
-			fmt.Printf("  - XXH3 checksum verified!\n")
-		}
-
-		rc, err := f.Open()
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		content, err := io.ReadAll(rc)
-		if err != nil {
-			log.Fatal(err)
-		}
-		rc.Close()
-
-		fmt.Printf("  - Content: %s\n", content)
+	// Write content to the file.
+	_, err = io.WriteString(writer, "Hello, World!")
+	if err != nil {
+		log.Fatal(err)
 	}
+
+	// Close the zip writer to finalize the archive.
+	err = zipWriter.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Write the resulting zip file to disk.
+	err = os.WriteFile("encrypted.zip", buf.Bytes(), 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Created encrypted.zip")
 }
 ```
-
-### Encrypting a zip file
-
-```go
-// ...
-f, err := w.CreateHeader(&zip.FileHeader{
-    Name: "my-super-secret-file.txt",
-    Method: zip.Deflate,
-    Encryption: zip.AES256Encryption,
-})
-// ...
-```
-
-### Decrypting a zip file
-
-```go
-// ...
-f.SetPassword("my-super-secret-password")
-r, err := f.Open()
-// ...
-```
-
-for more info, pls refer to the original `yeka/zip` README.md
