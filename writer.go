@@ -11,8 +11,6 @@ import (
 	"hash"
 	"hash/crc32"
 	"io"
-	"sort"
-	"sync"
 
 	"github.com/zeebo/xxh3"
 )
@@ -25,23 +23,16 @@ type Writer struct {
 	dir    []*header
 	last   *fileWriter
 	closed bool
-	mu     sync.Mutex
-	files  []*fileWriter
 }
 
 type header struct {
 	*FileHeader
 	offset uint64
-	order  int
 }
 
 // NewWriter returns a new Writer writing a zip file to w.
 func NewWriter(w io.Writer) *Writer {
-	return &Writer{
-		cw:    &countWriter{w: bufio.NewWriter(w)},
-		mu:    sync.Mutex{},
-		files: make([]*fileWriter, 0),
-	}
+	return &Writer{cw: &countWriter{w: bufio.NewWriter(w)}}
 }
 
 // SetOffset sets the offset of the beginning of the zip data within the
@@ -70,24 +61,10 @@ func (w *Writer) Close() error {
 		}
 		w.last = nil
 	}
-
-	for _, fw := range w.files {
-		if !fw.closed {
-			if err := fw.close(); err != nil {
-				return err
-			}
-		}
-	}
-
 	if w.closed {
 		return errors.New("zip: writer closed twice")
 	}
 	w.closed = true
-
-	// sort dir by order
-	sort.SliceStable(w.dir, func(i, j int) bool {
-		return w.dir[i].order < w.dir[j].order
-	})
 
 	// write central directory
 	start := w.cw.count
@@ -247,41 +224,6 @@ func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMet
 	return w.CreateHeader(header)
 }
 
-// CreateWithOrder adds a file to the zip file using the provided name, compression, encryption options and order.
-// It returns a Writer to which the file contents should be written.
-// The name must be a relative path: it must not start with a drive
-// letter (e.g. C:) or leading slash, and only forward slashes are
-// allowed.
-// The file's contents must be written to the io.Writer before the next
-// call to Create, CreateHeader, or Close.
-func (w *Writer) CreateWithOrder(name string, method uint16, level int, enc EncryptionMethod, password string, order int) (io.Writer, error) {
-	if method == Deflate && level == 0 {
-		method = Store
-	}
-	if method == Store && level != 0 {
-		return nil, errors.New("archive/zip: invalid compression level for store method. Should be 0.")
-	}
-	if enc != NoEncryption && method != Deflate {
-		return nil, errors.New("archive/zip: encryption method only supported for deflate method.")
-	}
-	if enc != NoEncryption && password == "" {
-		return nil, errors.New("archive/zip: password required for encryption method.")
-	}
-	if password != "" && enc == NoEncryption {
-		return nil, errors.New("archive/zip: encryption method required for password.")
-	}
-	header := &FileHeader{
-		Name:             name,
-		Method:           method,
-		CompressionLevel: level,
-	}
-	if enc != NoEncryption {
-		header.SetEncryptionMethod(enc)
-		header.SetPassword(password)
-	}
-	return w.CreateHeaderWithOrder(header, order)
-}
-
 // CreateHeader adds a file to the zip file using the provided FileHeader
 // for the file metadata.
 // It returns a Writer to which the file contents should be written.
@@ -356,87 +298,6 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 	}
 
 	w.last = fw
-	return fw, nil
-}
-
-// CreateHeaderWithOrder adds a file to the zip file using the provided FileHeader
-// for the file metadata and order.
-// It returns a Writer to which the file contents should be written.
-//
-// The file's contents must be written to the io.Writer before the next
-// call to Create, CreateHeader, or Close. The provided FileHeader fh
-// must not be modified after a call to CreateHeader.
-func (w *Writer) CreateHeaderWithOrder(fh *FileHeader, order int) (io.Writer, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	if w.last != nil && !w.last.closed {
-		if err := w.last.close(); err != nil {
-			return nil, err
-		}
-	}
-	if len(w.dir) > 0 && w.dir[len(w.dir)-1].FileHeader == fh {
-		// See https://golang.org/issue/11144 confusion.
-		return nil, errors.New("archive/zip: invalid duplicate FileHeader")
-	}
-
-	fh.Flags |= 0x8 // we will write a data descriptor
-	// TODO(alex): Look at spec and see if these need to be changed
-	// when using encryption.
-	fh.CreatorVersion = fh.CreatorVersion&0xff00 | zipVersion20 // preserve compatibility byte
-	fh.ReaderVersion = zipVersion20
-
-	fw := &fileWriter{
-		zipw:      w.cw,
-		compCount: &countWriter{w: w.cw},
-		crc32:     crc32.NewIEEE(),
-		xxh3:      xxh3.New(),
-	}
-	// Get the compressor before possibly changing Method to 99 due to password
-	comp := compressor(fh.Method, fh.CompressionLevel)
-	if comp == nil {
-		return nil, ErrAlgorithm
-	}
-	// check for password
-	var sw io.Writer = fw.compCount
-	if fh.password != nil {
-		if fh.encryption == StandardEncryption {
-			ew, err := ZipCryptoEncryptor(sw, fh.password, fw)
-			if err != nil {
-				return nil, err
-			}
-			sw = ew
-		} else {
-			// we have a password and need to encrypt.
-			fh.writeWinZipExtra()
-			fh.Method = 99 // ok to change, we've gotten the comp and wrote extra
-			ew, err := newEncryptionWriter(sw, fh.password, fw, fh.aesStrength)
-			if err != nil {
-				return nil, err
-			}
-			sw = ew
-		}
-	}
-	var err error
-	fw.comp, err = comp(sw)
-	if err != nil {
-		return nil, err
-	}
-	fw.rawCount = &countWriter{w: fw.comp}
-
-	h := &header{
-		FileHeader: fh,
-		offset:     uint64(w.cw.count),
-		order:      order,
-	}
-	w.dir = append(w.dir, h)
-	fw.header = h
-
-	if err := writeHeader(w.cw, fh); err != nil {
-		return nil, err
-	}
-
-	w.files = append(w.files, fw)
 	return fw, nil
 }
 
