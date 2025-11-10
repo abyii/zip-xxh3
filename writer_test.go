@@ -86,6 +86,253 @@ func TestWriter(t *testing.T) {
 	}
 }
 
+func TestDetachedWriter(t *testing.T) {
+	// Create a new detached writer
+	zipw := NewWriter()
+
+	// Create a file part
+	buf := new(bytes.Buffer)
+	fh := &FileHeader{
+		Name:   "hello.txt",
+		Method: Deflate,
+	}
+	w, err := zipw.CreateFileParts(fh, 0, buf)
+	if err != nil {
+		t.Fatalf("Failed to create file part: %v", err)
+	}
+
+	// Write to the file part
+	contents := []byte("Hello, World!")
+	_, err = w.Write(contents)
+	if err != nil {
+		t.Fatalf("Failed to write to file part: %v", err)
+	}
+
+	// Close the file part
+	if err := w.Close(); err != nil {
+		t.Fatalf("Failed to close file part: %v", err)
+	}
+
+	// Close the writer
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Get the central directory
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		t.Fatalf("Failed to get central directory: %v", err)
+	}
+
+	// Verify the central directory
+	if len(cd) == 0 {
+		t.Fatal("Central directory is empty")
+	}
+}
+
+func TestDetachedWriterComprehensive(t *testing.T) {
+	// Define the files to be added to the zip archive
+	testFiles := []struct {
+		Name             string
+		Content          []byte
+		Password         string
+		Method           uint16
+		EncMethod        EncryptionMethod
+		CompressionLevel int
+	}{
+		{
+			Name:             "file1.txt",
+			Content:          []byte("This is a test file."),
+			Method:           Deflate,
+			CompressionLevel: 9,
+		},
+		{
+			Name:             "file2-std.txt",
+			Content:          []byte("This is a standard encrypted file."),
+			Password:         "password123",
+			Method:           Deflate,
+			EncMethod:        StandardEncryption,
+			CompressionLevel: 8,
+		},
+		{
+			Name:             "file3-aes128.txt",
+			Content:          []byte("This is an AES-128 encrypted file."),
+			Password:         "password456",
+			Method:           Deflate,
+			EncMethod:        AES128Encryption,
+			CompressionLevel: 7,
+		},
+		{
+			Name:             "file4-aes192.txt",
+			Content:          []byte("This is an AES-192 encrypted file."),
+			Password:         "password789",
+			Method:           Deflate,
+			EncMethod:        AES192Encryption,
+			CompressionLevel: 6,
+		},
+		{
+			Name:             "file5-aes256.txt",
+			Content:          []byte("This is an AES-256 encrypted file."),
+			Password:         "passwordabc",
+			Method:           Deflate,
+			EncMethod:        AES256Encryption,
+			CompressionLevel: 5,
+		},
+		{
+			Name:             "empty.txt",
+			Content:          []byte{},
+			Method:           Deflate,
+			CompressionLevel: 4,
+		},
+		{
+			Name:             "stored.txt",
+			Content:          []byte("This file is stored without compression."),
+			Method:           Store,
+			CompressionLevel: 0,
+		},
+	}
+
+	// Create a new detached writer
+	zipw := NewWriter()
+
+	// Create file parts and write content
+	var fileParts [][]byte
+	for i, tf := range testFiles {
+		buf := new(bytes.Buffer)
+		w, err := zipw.CreateFilePartSimple(tf.Name, tf.Method, tf.CompressionLevel, tf.EncMethod, tf.Password, i, buf)
+		if err != nil {
+			t.Fatalf("Failed to create file part for %s: %v", tf.Name, err)
+		}
+		_, err = w.Write(tf.Content)
+		if err != nil {
+			t.Fatalf("Failed to write to file part for %s: %v", tf.Name, err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Failed to close file part for %s: %v", tf.Name, err)
+		}
+		fileParts = append(fileParts, buf.Bytes())
+	}
+
+	// Close the writer
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Get the central directory
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		t.Fatalf("Failed to get central directory: %v", err)
+	}
+
+	// Assemble the zip file
+	zipBuf := new(bytes.Buffer)
+	for _, p := range fileParts {
+		zipBuf.Write(p)
+	}
+	zipBuf.Write(cd)
+
+	// Read and verify the zip file
+	r, err := NewReader(bytes.NewReader(zipBuf.Bytes()), int64(zipBuf.Len()))
+	if err != nil {
+		t.Fatalf("Failed to create zip reader: %v", err)
+	}
+
+	if len(r.File) != len(testFiles) {
+		t.Fatalf("Expected %d files in zip, but got %d", len(testFiles), len(r.File))
+	}
+
+	for _, f := range r.File {
+		var tf struct {
+			Name             string
+			Content          []byte
+			Password         string
+			Method           uint16
+			EncMethod        EncryptionMethod
+			CompressionLevel int
+		}
+		found := false
+		for _, testFile := range testFiles {
+			if testFile.Name == f.Name {
+				tf = testFile
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Found unexpected file %s in zip", f.Name)
+		}
+
+		if tf.Password != "" {
+			f.SetPassword(tf.Password)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("Failed to open file %s: %v", f.Name, err)
+		}
+
+		content, err := io.ReadAll(rc)
+		if err != nil {
+			if err == ErrPassword {
+				t.Fatalf("Invalid password for file %s", f.Name)
+			}
+			t.Fatalf("Failed to read content of file %s: %v", f.Name, err)
+		}
+
+		if !bytes.Equal(content, tf.Content) {
+			t.Errorf("Content of file %s does not match expected content", f.Name)
+		}
+
+		rc.Close()
+	}
+}
+
+func TestDetachedWriterWithPassword(t *testing.T) {
+	// Create a new detached writer
+	zipw := NewWriter()
+
+	// Create a file part
+	buf := new(bytes.Buffer)
+	fh := &FileHeader{
+		Name:   "hello.txt",
+		Method: Deflate,
+	}
+	fh.SetEncryptionMethod(AES256Encryption)
+	fh.SetPassword("golang")
+	w, err := zipw.CreateFileParts(fh, 0, buf)
+	if err != nil {
+		t.Fatalf("Failed to create file part: %v", err)
+	}
+
+	// Write to the file part
+	contents := []byte("Hello, World!")
+	_, err = w.Write(contents)
+	if err != nil {
+		t.Fatalf("Failed to write to file part: %v", err)
+	}
+
+	// Close the file part
+	if err := w.Close(); err != nil {
+		t.Fatalf("Failed to close file part: %v", err)
+	}
+
+	// Close the writer
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Get the central directory
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		t.Fatalf("Failed to get central directory: %v", err)
+	}
+
+	// Verify the central directory
+	if len(cd) == 0 {
+		t.Fatal("Central directory is empty")
+	}
+}
+
 func TestWriterOffset(t *testing.T) {
 	largeData := make([]byte, 1<<17)
 	for i := range largeData {

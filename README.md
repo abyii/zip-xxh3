@@ -94,3 +94,87 @@ func main() {
 	log.Println("Created encrypted.zip")
 }
 ```
+
+### Detached Mode
+
+Detached mode allows you to create a zip file from parts that can be processed concurrently. This is useful when you need to generate file parts in parallel and then assemble them into a single zip archive at the end. The process involves creating individual file parts, generating a central directory, and then appending all the pieces together.
+
+**Functions:**
+
+*   `CreateFilePart(name string, method uint16, level int, enc EncryptionMethod, password string, order int, partWriter io.Writer) (io.WriteCloser, error)`: Creates a new file part in the zip archive. It returns a writer to which the file contents should be written.
+*   `GetCentralDirectoryBytes() ([]byte, error)`: Returns the central directory for the zip archive. This should be called after all file parts have been created and closed.
+
+**Example:**
+
+This example demonstrates how to create a zip file with multiple file parts, including one that is encrypted. The file parts are created in memory and then assembled into a final zip file.
+
+```go
+package main
+
+import (
+	"bytes"
+	"io"
+	"log"
+	"os"
+
+	"github.com/abyii/zip-xxh3"
+)
+
+func main() {
+	// Create a new detached writer.
+	zipw := zip.NewWriter()
+
+	// Define the files to be added to the zip archive.
+	testFiles := []struct {
+		Name     string
+		Content  []byte
+		Password string
+	}{
+		{"hello.txt", []byte("Hello, World!"), ""},
+		{"secret.txt", []byte("This is a secret."), "supersecret"},
+	}
+
+	// Create file parts and write content.
+	var fileParts [][]byte
+	for i, tf := range testFiles {
+		buf := new(bytes.Buffer)
+		encMethod := zip.NoEncryption
+		if tf.Password != "" {
+			encMethod = zip.AES256Encryption
+		}
+		w, err := zipw.CreateFilePart(tf.Name, zip.Deflate, -1, encMethod, tf.Password, i, buf)
+		if err != nil {
+			log.Fatalf("Failed to create file part for %s: %v", tf.Name, err)
+		}
+		_, err = w.Write(tf.Content)
+		if err != nil {
+			log.Fatalf("Failed to write to file part for %s: %v", tf.Name, err)
+		}
+		if err := w.Close(); err != nil {
+			log.Fatalf("Failed to close file part for %s: %v", tf.Name, err)
+		}
+		fileParts = append(fileParts, buf.Bytes())
+	}
+
+	// Get the central directory.
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		log.Fatalf("Failed to get central directory: %v", err)
+	}
+
+	// Assemble the zip file.
+	var finalZip bytes.Buffer
+	for _, part := range fileParts {
+		finalZip.Write(part)
+	}
+	finalZip.Write(cd)
+
+	// Write the resulting zip file to disk.
+	err = os.WriteFile("detached.zip", finalZip.Bytes(), 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Created detached.zip")
+}
+```
