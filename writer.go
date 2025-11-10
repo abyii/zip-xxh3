@@ -217,7 +217,7 @@ func (w *Writer) Close() error {
 // allowed.
 // The file's contents must be written to the io.Writer before the next
 // call to Create, CreateHeader, or Close.
-func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMethod, password string) (io.Writer, error) {
+func createHeader(name string, method uint16, level int, enc EncryptionMethod, password string) (*FileHeader, error) {
 	if method == Deflate && level == 0 {
 		method = Store
 	}
@@ -241,6 +241,21 @@ func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMet
 	if enc != NoEncryption {
 		header.SetEncryptionMethod(enc)
 		header.SetPassword(password)
+	}
+	return header, nil
+}
+
+// Create adds a file to the zip file using the provided name, compression and encryption options.
+// It returns a Writer to which the file contents should be written.
+// The name must be a relative path: it must not start with a drive
+// letter (e.g. C:) or leading slash, and only forward slashes are
+// allowed.
+// The file's contents must be written to the io.Writer before the next
+// call to Create, CreateHeader, or Close.
+func (w *Writer) Create(name string, method uint16, level int, enc EncryptionMethod, password string) (io.Writer, error) {
+	header, err := createHeader(name, method, level, enc, password)
+	if err != nil {
+		return nil, err
 	}
 	return w.CreateHeader(header)
 }
@@ -272,21 +287,30 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 	}
 	w.dir = append(w.dir, h)
 
+	fw, err := newFileWriter(fh, h, w.cw)
+	if err != nil {
+		return nil, err
+	}
+
+	w.last = fw
+	return fw, nil
+}
+
+func newFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, error) {
 	fh.Flags |= 0x8                                             // we will write a data descriptor
 	fh.CreatorVersion = fh.CreatorVersion&0xff00 | zipVersion20 // preserve compatibility byte
 	fh.ReaderVersion = zipVersion20
 
-	// To be compatible with the detached mode, we have to use a separate
-	// countWriter to track the compressed size of each file.
-	compCount := &countWriter{w: w.cw}
+	compCount := &countWriter{w: w}
 
 	fw := &fileWriter{
-		header:    h,
-		zipw:      w.cw,
+		zipw:      w,
 		compCount: compCount,
 		crc32:     crc32.NewIEEE(),
 		xxh3:      xxh3.New(),
+		header:    h,
 	}
+
 	comp := compressor(fh.Method, fh.CompressionLevel)
 	if comp == nil {
 		return nil, ErrAlgorithm
@@ -312,6 +336,7 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 			sw = ew
 		}
 	}
+
 	var err error
 	fw.comp, err = comp(sw)
 	if err != nil {
@@ -319,41 +344,20 @@ func (w *Writer) CreateHeader(fh *FileHeader) (io.Writer, error) {
 	}
 	fw.rawCount = &countWriter{w: fw.comp}
 
-	if err := writeHeader(w.cw, fh); err != nil {
+	if err := writeHeader(w, fh); err != nil {
 		return nil, err
 	}
 
-	w.last = fw
 	return fw, nil
 }
 
-// CreateFilePart adds a file to the zip file using the provided name, compression and encryption options.
+// CreateFilePartSimple adds a file to the zip file using the provided name, compression and encryption options.
 // It returns a Writer to which the file contents should be written.
 // This is for detached mode.
 func (w *Writer) CreateFilePartSimple(name string, method uint16, level int, enc EncryptionMethod, password string, order int, partWriter io.Writer) (io.WriteCloser, error) {
-	if method == Deflate && level == 0 {
-		method = Store
-	}
-	if method == Store && level != 0 {
-		return nil, errors.New("archive/zip: invalid compression level for store method. Should be 0.")
-	}
-	if enc != NoEncryption && method != Deflate {
-		return nil, errors.New("archive/zip: encryption method only supported for deflate method.")
-	}
-	if enc != NoEncryption && password == "" {
-		return nil, errors.New("archive/zip: password required for encryption method.")
-	}
-	if password != "" && enc == NoEncryption {
-		return nil, errors.New("archive/zip: encryption method required for password.")
-	}
-	header := &FileHeader{
-		Name:             name,
-		Method:           method,
-		CompressionLevel: level,
-	}
-	if enc != NoEncryption {
-		header.SetEncryptionMethod(enc)
-		header.SetPassword(password)
+	header, err := createHeader(name, method, level, enc, password)
+	if err != nil {
+		return nil, err
 	}
 	return w.CreateFileParts(header, order, partWriter)
 }
@@ -362,65 +366,14 @@ func (w *Writer) CreateFileParts(fh *FileHeader, order int, partWriter io.Writer
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	fh.Flags |= 0x8                                             // we will write a data descriptor
-	fh.CreatorVersion = fh.CreatorVersion&0xff00 | zipVersion20 // preserve compatibility byte
-	fh.ReaderVersion = zipVersion20
-
-	compCount := &countWriter{w: partWriter}
-
-	fw := &fileWriter{
-		zipw:      partWriter,
-		compCount: compCount,
-		crc32:     crc32.NewIEEE(),
-		xxh3:      xxh3.New(),
-	}
-
-	comp := compressor(fh.Method, fh.CompressionLevel)
-	if comp == nil {
-		return nil, ErrAlgorithm
-	}
-
-	var sw io.Writer = fw.compCount
-	// check for password
-	if fh.password != nil {
-		if fh.encryption == StandardEncryption {
-			ew, err := ZipCryptoEncryptor(sw, fh.password, fw)
-			if err != nil {
-				return nil, err
-			}
-			sw = ew
-		} else {
-			// we have a password and need to encrypt.
-			fh.writeWinZipExtra()
-			fh.Method = 99 // ok to change, we've gotten the comp and wrote extra
-			ew, err := newEncryptionWriter(sw, fh.password, fw, fh.aesStrength)
-			if err != nil {
-				return nil, err
-			}
-			sw = ew
-		}
-	}
-
-	var err error
-	fw.comp, err = comp(sw)
-	if err != nil {
-		return nil, err
-	}
-	fw.rawCount = &countWriter{w: fw.comp}
-
 	h := &header{
 		FileHeader: fh,
 		order:      order,
 	}
 
 	w.dir = append(w.dir, h)
-	fw.header = h
 
-	if err := writeHeader(partWriter, fh); err != nil {
-		return nil, err
-	}
-
-	return fw, nil
+	return newFileWriter(fh, h, partWriter)
 }
 
 func writeHeader(w io.Writer, h *FileHeader) error {

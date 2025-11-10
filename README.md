@@ -142,7 +142,7 @@ func main() {
 		if tf.Password != "" {
 			encMethod = zip.AES256Encryption
 		}
-		w, err := zipw.CreateFilePart(tf.Name, zip.Deflate, -1, encMethod, tf.Password, i, buf)
+		w, err := zipw.CreateFilePartSimple(tf.Name, zip.Deflate, -1, encMethod, tf.Password, i, buf)
 		if err != nil {
 			log.Fatalf("Failed to create file part for %s: %v", tf.Name, err)
 		}
