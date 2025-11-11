@@ -101,7 +101,7 @@ Detached mode allows you to create a zip file from parts that can be processed c
 
 **Functions:**
 
-*   `CreateFilePart(name string, method uint16, level int, enc EncryptionMethod, password string, order int, partWriter io.Writer) (io.WriteCloser, error)`: Creates a new file part in the zip archive. It returns a writer to which the file contents should be written.
+*   `CreateFilePartSimple(name string, method uint16, level int, enc EncryptionMethod, password string, order int, partWriter io.Writer) (io.WriteCloser, error)`: Creates a new file part in the zip archive. It returns a writer to which the file contents should be written.
 *   `GetCentralDirectoryBytes() ([]byte, error)`: Returns the central directory for the zip archive. This should be called after all file parts have been created and closed.
 
 **Example:**
