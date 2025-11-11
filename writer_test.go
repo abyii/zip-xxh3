@@ -9,6 +9,8 @@ import (
 	"io"
 	"math/rand"
 	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -127,6 +129,261 @@ func TestDetachedWriter(t *testing.T) {
 	// Verify the central directory
 	if len(cd) == 0 {
 		t.Fatal("Central directory is empty")
+	}
+}
+
+func TestDetachedWriterFromDirectory(t *testing.T) {
+	// Use a persistent directory for the test
+	sourceDir := "testdata/source"
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	testFiles := []struct {
+		Name    string
+		Content []byte
+	}{
+		{"file1.txt", []byte("This is file 1.")},
+		{"file2.txt", []byte("This is file 2.")},
+		{"empty.txt", []byte{}},
+	}
+
+	for _, tf := range testFiles {
+		if err := os.WriteFile(filepath.Join(sourceDir, tf.Name), tf.Content, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a new detached writer
+	zipw := NewWriter()
+
+	// Create file parts from the directory
+	var fileParts [][]byte
+	files, err := os.ReadDir(sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fileCount := 0
+	for _, f := range files {
+		if f.IsDir() {
+			continue
+		}
+		buf := new(bytes.Buffer)
+		content, err := os.ReadFile(filepath.Join(sourceDir, f.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		w, err := zipw.CreateFilePartSimple(f.Name(), Deflate, 6, StandardEncryption, "test", fileCount, buf)
+		if err != nil {
+			t.Fatalf("Failed to create file part for %s: %v", f.Name(), err)
+		}
+		_, err = w.Write(content)
+		if err != nil {
+			t.Fatalf("Failed to write to file part for %s: %v", f.Name(), err)
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("Failed to close file part for %s: %v", f.Name(), err)
+		}
+		fileParts = append(fileParts, buf.Bytes())
+		fileCount++
+	}
+
+	// Close the writer to finalize the central directory
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Get the central directory
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Assemble the zip file
+	zipName := "testdata/output.zip"
+	zipFile, err := os.Create(zipName)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, part := range fileParts {
+		if _, err := zipFile.Write(part); err != nil {
+			zipFile.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := zipFile.Write(cd); err != nil {
+		zipFile.Close()
+		t.Fatal(err)
+	}
+	zipFile.Close() // Close before reading
+
+	// Verify the zip file
+	r, err := OpenReader(zipName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	r.SetPassword("test")
+
+	if len(r.File) != len(testFiles) {
+		t.Fatalf("Expected %d files in zip, but got %d", len(testFiles), len(r.File))
+	}
+
+	for _, f := range r.File {
+		var found bool
+		for _, tf := range testFiles {
+			if f.Name == tf.Name {
+				found = true
+				rc, err := f.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				content, err := io.ReadAll(rc)
+				rc.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(content, tf.Content) {
+					t.Errorf("Content of %s does not match", f.Name)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Unexpected file in zip: %s", f.Name)
+		}
+	}
+}
+
+func TestDetachedWriterConcurrent(t *testing.T) {
+	// Use a persistent directory for the test
+	sourceDir := "testdata/concurrent_source"
+	if err := os.MkdirAll(sourceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sourceDir)
+
+	testFiles := []struct {
+		Name    string
+		Content []byte
+	}{
+		{"file1.txt", []byte("This is file 1.")},
+		{"file2.txt", []byte("This is file 2.")},
+		{"file3.txt", []byte("This is file 3.")},
+		{"empty.txt", []byte{}},
+	}
+
+	for _, tf := range testFiles {
+		if err := os.WriteFile(filepath.Join(sourceDir, tf.Name), tf.Content, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a new detached writer
+	zipw := NewWriter()
+
+	var wg sync.WaitGroup
+	fileParts := make([][]byte, len(testFiles))
+
+	for i, tf := range testFiles {
+		wg.Add(1)
+		go func(i int, tf struct {
+			Name    string
+			Content []byte
+		}) {
+			defer wg.Done()
+			buf := new(bytes.Buffer)
+			w, err := zipw.CreateFilePartSimple(tf.Name, Deflate, 6, StandardEncryption, "test", i, buf)
+			if err != nil {
+				t.Errorf("Failed to create file part for %s: %v", tf.Name, err)
+				return
+			}
+			_, err = w.Write(tf.Content)
+			if err != nil {
+				t.Errorf("Failed to write to file part for %s: %v", tf.Name, err)
+				return
+			}
+			if err := w.Close(); err != nil {
+				t.Errorf("Failed to close file part for %s: %v", tf.Name, err)
+				return
+			}
+			fileParts[i] = buf.Bytes()
+		}(i, tf)
+	}
+
+	wg.Wait()
+
+	// Close the writer to finalize the central directory
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close writer: %v", err)
+	}
+
+	// Get the central directory
+	cd, err := zipw.GetCentralDirectoryBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Assemble the zip file
+	zipName := "testdata/concurrent.zip"
+	zipFile, err := os.Create(zipName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(zipName)
+
+	for _, part := range fileParts {
+		if _, err := zipFile.Write(part); err != nil {
+			zipFile.Close()
+			t.Fatal(err)
+		}
+	}
+	if _, err := zipFile.Write(cd); err != nil {
+		zipFile.Close()
+		t.Fatal(err)
+	}
+	zipFile.Close() // Close before reading
+
+	// Verify the zip file
+	r, err := OpenReader(zipName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	r.SetPassword("test")
+
+	if len(r.File) != len(testFiles) {
+		t.Fatalf("Expected %d files in zip, but got %d", len(testFiles), len(r.File))
+	}
+
+	for _, f := range r.File {
+		var found bool
+		for _, tf := range testFiles {
+			if f.Name == tf.Name {
+				found = true
+				rc, err := f.Open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				content, err := io.ReadAll(rc)
+				rc.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !bytes.Equal(content, tf.Content) {
+					t.Errorf("Content of %s does not match", f.Name)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Errorf("Unexpected file in zip: %s", f.Name)
+		}
 	}
 }
 

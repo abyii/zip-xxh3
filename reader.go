@@ -154,6 +154,12 @@ func (f *File) VerifyXXH3() error {
 	return nil
 }
 
+func (r *Reader) SetPassword(password string) {
+	for _, f := range r.File {
+		f.SetPassword(password)
+	}
+}
+
 // Open returns a ReadCloser that provides access to the File's contents.
 // Multiple files may be read concurrently.
 func (f *File) Open() (rc io.ReadCloser, err error) {
