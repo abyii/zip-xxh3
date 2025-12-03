@@ -218,9 +218,6 @@ func (w *Writer) Close() error {
 // The file's contents must be written to the io.Writer before the next
 // call to Create, CreateHeader, or Close.
 func createHeader(name string, method uint16, level int, enc EncryptionMethod, password string) (*FileHeader, error) {
-	if method == Deflate && level == 0 {
-		method = Store
-	}
 	if method == Store && level != 0 {
 		return nil, errors.New("archive/zip: invalid compression level for store method. Should be 0.")
 	}
