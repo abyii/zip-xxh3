@@ -373,6 +373,20 @@ func (w *Writer) CreateFileParts(fh *FileHeader, order int, partWriter io.Writer
 	return newFileWriter(fh, h, partWriter)
 }
 
+// AddFileWithOffset explicitly registers a file in the Central Directory
+// with a pre-calculated byte offset. This is specifically for detached
+// streaming modes where you manually construct the file blocks.
+func (w *Writer) AddFileWithOffset(fh *FileHeader, order int, offset uint64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	h := &header{
+		FileHeader: fh,
+		order:      order,
+		offset:     offset,
+	}
+	w.dir = append(w.dir, h)
+}
+
 func writeHeader(w io.Writer, h *FileHeader) error {
 	var buf [fileHeaderLen]byte
 	b := writeBuf(buf[:])
@@ -542,7 +556,14 @@ func (w *Writer) generateCentralDirectory() {
 
 	var offset uint64
 	for _, h := range w.dir {
-		h.offset = offset
+		// Only recalculate offset if it was not explicitly provided by AddFileWithOffset
+		if h.offset == 0 && offset > 0 {
+			h.offset = offset
+		} else if h.offset > 0 {
+			offset = h.offset
+		} else {
+			h.offset = offset
+		}
 
 		partLen := uint64(fileHeaderLen + len(h.Name) + len(h.Extra))
 		partLen += h.CompressedSize64

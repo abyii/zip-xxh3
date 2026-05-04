@@ -4,6 +4,7 @@
 This is a fork of `yeka/zip` that:
  - supports specifying compression level.
  - replaces compress/flate with klauspost/compress/flate which is an optimised version of compress/flate, and implements better gradient accross different compression levels.
+ - adds support for filtering files from a zip archive file stream (stream filtering).
  - adds support for XXH3 64 bit checksum (using zeebo/xxh3).
 
 > XXhash3 is a extremely fast, non-cryptographic hash function. It is designed to be used in high-performance applications where speed is important. It has excellent collision distribution. XXhash3 is so fast that it is often bottlenecked by how fast you can read bytes off the disk and not the algorithm itself.
@@ -176,5 +177,66 @@ func main() {
 	}
 
 	log.Println("Created detached.zip")
+}
+```
+
+### Stream Filtering
+
+Stream Filtering allows you to parse a zip archive and efficiently filter out files on-the-fly, writing to a new output stream without fully decompressing or decrypting the target files. This acts as a highly optimized raw byte-copy engine that natively recalculates offsets and flawlessly regenerates the Central Directory.
+
+**Functions:**
+
+*   `FilterZipStream(r *Reader, stream io.Reader, w io.Writer, filter func(*File) bool) error`: Processes the files inside the `zip.Reader` and efficiently streams the exact original bytes from `stream` into `w` if they evaluate to true using the `filter` function.
+
+**Example:**
+
+This example demonstrates filtering an existing zip file, retaining only `.txt` files without suffering the heavy cost of decompression and re-compression.
+
+```go
+package main
+
+import (
+	"io"
+	"log"
+	"os"
+	"strings"
+
+	"github.com/abyii/zip-xxh3"
+)
+
+func main() {
+	// Open an existing zip file
+	f, err := os.Open("large_archive.zip")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	stat, _ := f.Stat()
+	
+	// Parse the central directory
+	zr, err := zip.NewReader(f, stat.Size())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	out, err := os.Create("filtered_archive.zip")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+
+	// Reset stream to beginning since NewReader parses from the tail
+	f.Seek(0, io.SeekStart)
+
+	// Filter files efficiently (e.g., keep only .txt files)
+	err = zip.FilterZipStream(zr, f, out, func(file *zip.File) bool {
+		return strings.HasSuffix(file.Name, ".txt")
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("Created filtered_archive.zip")
 }
 ```
