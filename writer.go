@@ -421,6 +421,7 @@ type fileWriter struct {
 	xxh3       hash.Hash64
 	closed     bool
 	partWriter io.Writer
+	raw        bool
 
 	hmac hash.Hash // possible hmac used for authentication when encrypting
 }
@@ -429,8 +430,10 @@ func (w *fileWriter) Write(p []byte) (int, error) {
 	if w.closed {
 		return 0, errors.New("zip: write to closed file")
 	}
-	w.crc32.Write(p)
-	w.xxh3.Write(p)
+	if !w.raw {
+		w.crc32.Write(p)
+		w.xxh3.Write(p)
+	}
 	return w.rawCount.Write(p)
 }
 
@@ -453,13 +456,17 @@ func (w *fileWriter) Close() error {
 	}
 	// update FileHeader
 	fh := w.header.FileHeader
-	// ae-2 we don't write out CRC
-	if !fh.IsEncrypted() || fh.encryption == StandardEncryption {
-		fh.CRC32 = w.crc32.Sum32()
+	if w.raw {
+		fh.CompressedSize64 = uint64(w.compCount.count)
+	} else {
+		// ae-2 we don't write out CRC
+		if !fh.IsEncrypted() || fh.encryption == StandardEncryption {
+			fh.CRC32 = w.crc32.Sum32()
+		}
+		fh.XXH3 = w.xxh3.Sum64()
+		fh.CompressedSize64 = uint64(w.compCount.count)
+		fh.UncompressedSize64 = uint64(w.rawCount.count)
 	}
-	fh.XXH3 = w.xxh3.Sum64()
-	fh.CompressedSize64 = uint64(w.compCount.count)
-	fh.UncompressedSize64 = uint64(w.rawCount.count)
 
 	if fh.isZip64() {
 		fh.CompressedSize = uint32max

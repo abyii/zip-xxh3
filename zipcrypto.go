@@ -84,7 +84,6 @@ type zipCryptoWriter struct {
 }
 
 func (z *zipCryptoWriter) Write(p []byte) (n int, err error) {
-	err = nil
 	if z.first {
 		z.first = false
 		header := []byte{0xF8, 0x53, 0xCF, 0x05, 0x2D, 0xDD, 0xAD, 0xC8, 0x66, 0x3F, 0x8C, 0xAC}
@@ -95,11 +94,11 @@ func (z *zipCryptoWriter) Write(p []byte) (n int, err error) {
 		header[11] = byte(crc >> 8)
 
 		z.z.init()
-		z.w.Write(z.z.Encrypt(header))
-		n += 12
+		if _, err = z.w.Write(z.z.Encrypt(header)); err != nil {
+			return 0, err
+		}
 	}
-	z.w.Write(z.z.Encrypt(p))
-	return
+	return z.w.Write(z.z.Encrypt(p))
 }
 
 func ZipCryptoEncryptor(i io.Writer, pass passwordFn, fw *fileWriter) (io.Writer, error)  {
@@ -107,3 +106,39 @@ func ZipCryptoEncryptor(i io.Writer, pass passwordFn, fw *fileWriter) (io.Writer
 	zc := &zipCryptoWriter{i, z, true, fw}
 	return zc, nil
 }
+
+type zipCryptoDecryptReader struct {
+	r     io.Reader
+	z     *ZipCrypto
+	first bool
+}
+
+func (zd *zipCryptoDecryptReader) Read(p []byte) (n int, err error) {
+	if zd.first {
+		zd.first = false
+		header := make([]byte, 12)
+		if _, err := io.ReadFull(zd.r, header); err != nil {
+			return 0, err
+		}
+		// Decrypt the header to initialize the keys properly
+		for _, c := range header {
+			v := c ^ zd.z.magicByte()
+			zd.z.updateKeys(v)
+		}
+	}
+	n, err = zd.r.Read(p)
+	for i := 0; i < n; i++ {
+		v := p[i] ^ zd.z.magicByte()
+		zd.z.updateKeys(v)
+		p[i] = v
+	}
+	return n, err
+}
+
+func NewZipCryptoDecryptReader(r io.Reader, password []byte) io.Reader {
+	return &zipCryptoDecryptReader{
+		r:     r,
+		z:     NewZipCrypto(password),
+		first: true,
+	}
+}
