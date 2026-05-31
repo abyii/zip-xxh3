@@ -452,4 +452,112 @@ func TestCopyRawPartRobustOverrides(t *testing.T) {
 	}
 }
 
+func TestCopyRawPartEmptyFilesAndDirectories(t *testing.T) {
+	// 1. Create a zip with an empty file and a directory (which are not encrypted)
+	bufA := new(bytes.Buffer)
+	zwA := NewWriter(bufA)
+
+	// Directory entry (marked by trailing slash in ZIP format)
+	fhDir := &FileHeader{
+		Name: "testdir/",
+	}
+	_, err := zwA.CreateHeader(fhDir)
+	if err != nil {
+		t.Fatalf("Failed to create dir header: %v", err)
+	}
+
+	// Empty file entry
+	fhEmpty := &FileHeader{
+		Name: "testdir/empty.txt",
+	}
+	_, err = zwA.CreateHeader(fhEmpty)
+	if err != nil {
+		t.Fatalf("Failed to create empty file header: %v", err)
+	}
+
+	zwA.Close()
+
+	// 2. Extract raw file parts from Zip A
+	zipDataA := bufA.Bytes()
+	zrA, err := NewReader(bytes.NewReader(zipDataA), int64(len(zipDataA)))
+	if err != nil {
+		t.Fatalf("Failed to parse Zip A: %v", err)
+	}
+
+	if len(zrA.File) != 2 {
+		t.Fatalf("Expected 2 files in Zip A, got %d", len(zrA.File))
+	}
+
+	// Extract raw part bytes for Directory
+	fileDir := zrA.File[0]
+	var lfhBufDir [30]byte
+	zrA.r.ReadAt(lfhBufDir[:], fileDir.headerOffset)
+	extraLenDir := uint16(lfhBufDir[28]) | uint16(lfhBufDir[29])<<8
+	partLenDir := uint64(fileHeaderLen + len(fileDir.Name) + int(extraLenDir)) + fileDir.CompressedSize64 + uint64(dataDescriptorLen)
+	partBytesDir := zipDataA[fileDir.headerOffset : fileDir.headerOffset+int64(partLenDir)]
+
+	// Extract raw part bytes for Empty File
+	fileEmpty := zrA.File[1]
+	var lfhBufEmpty [30]byte
+	zrA.r.ReadAt(lfhBufEmpty[:], fileEmpty.headerOffset)
+	extraLenEmpty := uint16(lfhBufEmpty[28]) | uint16(lfhBufEmpty[29])<<8
+	partLenEmpty := uint64(fileHeaderLen + len(fileEmpty.Name) + int(extraLenEmpty)) + fileEmpty.CompressedSize64 + uint64(dataDescriptorLen)
+	partBytesEmpty := zipDataA[fileEmpty.headerOffset : fileEmpty.headerOffset+int64(partLenEmpty)]
+
+	// 3. Re-key/Reconstruct these raw parts into Zip B
+	// Even though they are unencrypted, we pass a non-empty oldPassword and newPassword
+	// to simulate the backup database behavior described in Bug 2.
+	bufB := new(bytes.Buffer)
+	zwB := NewWriter(bufB)
+
+	// Copy directory raw part
+	err = zwB.CopyRawPart(bytes.NewReader(partBytesDir), "oldPass", "newPass", nil)
+	if err != nil {
+		t.Fatalf("Failed to copy dir raw part: %v", err)
+	}
+
+	// Copy empty file raw part
+	err = zwB.CopyRawPart(bytes.NewReader(partBytesEmpty), "oldPass", "newPass", nil)
+	if err != nil {
+		t.Fatalf("Failed to copy empty file raw part: %v", err)
+	}
+
+	zwB.Close()
+
+	// 4. Read back Zip B and verify sizes are exactly 0
+	zipDataB := bufB.Bytes()
+	zrB, err := NewReader(bytes.NewReader(zipDataB), int64(len(zipDataB)))
+	if err != nil {
+		t.Fatalf("Failed to parse Zip B: %v", err)
+	}
+
+	if len(zrB.File) != 2 {
+		t.Fatalf("Expected 2 files in Zip B, got %d", len(zrB.File))
+	}
+
+	// Verify Directory
+	resDir := zrB.File[0]
+	if resDir.Name != "testdir/" {
+		t.Errorf("Expected 'testdir/', got '%s'", resDir.Name)
+	}
+	if resDir.UncompressedSize64 != 0 {
+		t.Errorf("Expected directory uncompressed size 0, got %d", resDir.UncompressedSize64)
+	}
+	if resDir.CompressedSize64 != 0 {
+		t.Errorf("Expected directory compressed size 0, got %d", resDir.CompressedSize64)
+	}
+
+	// Verify Empty File
+	resEmpty := zrB.File[1]
+	if resEmpty.Name != "testdir/empty.txt" {
+		t.Errorf("Expected 'testdir/empty.txt', got '%s'", resEmpty.Name)
+	}
+	if resEmpty.UncompressedSize64 != 0 {
+		t.Errorf("Expected empty file uncompressed size 0, got %d", resEmpty.UncompressedSize64)
+	}
+	if resEmpty.CompressedSize64 != 0 {
+		t.Errorf("Expected empty file compressed size 0, got %d", resEmpty.CompressedSize64)
+	}
+}
+
 

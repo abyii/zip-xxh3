@@ -150,10 +150,10 @@ func (ds *descriptorStripper) Read(p []byte) (n int, err error) {
 		windowBytes := ds.ring.Bytes()
 		var descStart = -1
 		if ds.hasDescriptor {
-			if len(windowBytes) >= 24 && binary.LittleEndian.Uint32(windowBytes[0:4]) == dataDescriptorSignature {
-				descStart = 0
-			} else if len(windowBytes) >= 16 && binary.LittleEndian.Uint32(windowBytes[8:12]) == dataDescriptorSignature {
-				descStart = 8
+			if len(windowBytes) >= 24 && binary.LittleEndian.Uint32(windowBytes[len(windowBytes)-24:len(windowBytes)-20]) == dataDescriptorSignature {
+				descStart = len(windowBytes) - 24
+			} else if len(windowBytes) >= 16 && binary.LittleEndian.Uint32(windowBytes[len(windowBytes)-16:len(windowBytes)-12]) == dataDescriptorSignature {
+				descStart = len(windowBytes) - 16
 			}
 		}
 

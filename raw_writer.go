@@ -156,7 +156,8 @@ func (w *Writer) CopyRawPart(src io.Reader, oldPassword, newPassword string, mod
 	fh.ExternalAttrs = override.ExternalAttrs
 	fh.Extra = override.Extra
 
-	if newPassword != "" {
+	sourceEncrypted := (fh.Flags & 0x1) != 0
+	if newPassword != "" && sourceEncrypted {
 		fh.SetPassword(newPassword)
 		fh.SetEncryptionMethod(StandardEncryption)
 	} else {
@@ -174,7 +175,7 @@ func (w *Writer) CopyRawPart(src io.Reader, oldPassword, newPassword string, mod
 	stripper := newDescriptorStripper(src, hasDescriptor)
 
 	var decryptedSrc io.Reader = stripper
-	if oldPassword != "" {
+	if oldPassword != "" && sourceEncrypted {
 		decryptedSrc = NewZipCryptoDecryptReader(stripper, []byte(oldPassword))
 	}
 
