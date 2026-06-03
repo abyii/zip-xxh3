@@ -221,8 +221,8 @@ func createHeader(name string, method uint16, level int, enc EncryptionMethod, p
 	if method == Store && level != 0 {
 		return nil, errors.New("archive/zip: invalid compression level for store method. Should be 0.")
 	}
-	if enc != NoEncryption && method != Deflate {
-		return nil, errors.New("archive/zip: encryption method only supported for deflate method.")
+	if enc != NoEncryption && method != Deflate && method != Store {
+		return nil, errors.New("archive/zip: encryption method only supported for deflate or store methods.")
 	}
 	if enc != NoEncryption && password == "" {
 		return nil, errors.New("archive/zip: password required for encryption method.")
