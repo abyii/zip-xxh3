@@ -2,6 +2,7 @@ package zip
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 )
@@ -557,6 +558,97 @@ func TestCopyRawPartEmptyFilesAndDirectories(t *testing.T) {
 	}
 	if resEmpty.CompressedSize64 != 0 {
 		t.Errorf("Expected empty file compressed size 0, got %d", resEmpty.CompressedSize64)
+	}
+}
+
+func TestReadLocalFileHeaderZip64(t *testing.T) {
+	mockLFH := func(compSize, uncompSize uint32, extraBytes []byte) io.Reader {
+		var buf bytes.Buffer
+		rawBuf := make([]byte, 30)
+		b := writeBuf(rawBuf)
+		b.uint32(fileHeaderSignature)
+		b.uint16(45)          // reader version (4.5 for ZIP64)
+		b.uint16(0x0)         // flags (no descriptor)
+		b.uint16(Deflate)     // method
+		b.uint16(1234)        // mod time
+		b.uint16(5678)        // mod date
+		b.uint32(0x12345678)  // CRC
+		b.uint32(compSize)    // compressed size
+		b.uint32(uncompSize)  // uncompressed size
+		b.uint16(8)           // name len
+		b.uint16(uint16(len(extraBytes)))
+
+		buf.Write(rawBuf)
+		buf.WriteString("test.txt")
+		buf.Write(extraBytes)
+		return &buf
+	}
+
+	// Test case 1: Both sizes are ZIP64.
+	{
+		var extra bytes.Buffer
+		binary.Write(&extra, binary.LittleEndian, uint16(zip64ExtraId))
+		binary.Write(&extra, binary.LittleEndian, uint16(16))
+		binary.Write(&extra, binary.LittleEndian, uint64(5000000000)) // uncomp
+		binary.Write(&extra, binary.LittleEndian, uint64(4000000000)) // comp
+
+		r := mockLFH(0xFFFFFFFF, 0xFFFFFFFF, extra.Bytes())
+		fh, err := ReadLocalFileHeader(r)
+		if err != nil {
+			t.Fatalf("Failed to read local file header (both ZIP64): %v", err)
+		}
+		if fh.Name != "test.txt" {
+			t.Errorf("Expected name 'test.txt', got '%s'", fh.Name)
+		}
+		if fh.UncompressedSize64 != 5000000000 {
+			t.Errorf("Expected UncompressedSize64 = 5000000000, got %d", fh.UncompressedSize64)
+		}
+		if fh.CompressedSize64 != 4000000000 {
+			t.Errorf("Expected CompressedSize64 = 4000000000, got %d", fh.CompressedSize64)
+		}
+		if fh.UncompressedSize != 0xFFFFFFFF {
+			t.Errorf("Expected UncompressedSize = 0xFFFFFFFF, got %d", fh.UncompressedSize)
+		}
+	}
+
+	// Test case 2: Only uncompressed size is ZIP64.
+	{
+		var extra bytes.Buffer
+		binary.Write(&extra, binary.LittleEndian, uint16(zip64ExtraId))
+		binary.Write(&extra, binary.LittleEndian, uint16(8))
+		binary.Write(&extra, binary.LittleEndian, uint64(5000000000)) // uncomp
+
+		r := mockLFH(200, 0xFFFFFFFF, extra.Bytes())
+		fh, err := ReadLocalFileHeader(r)
+		if err != nil {
+			t.Fatalf("Failed to read local file header (only uncomp ZIP64): %v", err)
+		}
+		if fh.UncompressedSize64 != 5000000000 {
+			t.Errorf("Expected UncompressedSize64 = 5000000000, got %d", fh.UncompressedSize64)
+		}
+		if fh.CompressedSize64 != 200 {
+			t.Errorf("Expected CompressedSize64 = 200, got %d", fh.CompressedSize64)
+		}
+	}
+
+	// Test case 3: Only compressed size is ZIP64.
+	{
+		var extra bytes.Buffer
+		binary.Write(&extra, binary.LittleEndian, uint16(zip64ExtraId))
+		binary.Write(&extra, binary.LittleEndian, uint16(8))
+		binary.Write(&extra, binary.LittleEndian, uint64(4000000000)) // comp
+
+		r := mockLFH(0xFFFFFFFF, 300, extra.Bytes())
+		fh, err := ReadLocalFileHeader(r)
+		if err != nil {
+			t.Fatalf("Failed to read local file header (only comp ZIP64): %v", err)
+		}
+		if fh.UncompressedSize64 != 300 {
+			t.Errorf("Expected UncompressedSize64 = 300, got %d", fh.UncompressedSize64)
+		}
+		if fh.CompressedSize64 != 4000000000 {
+			t.Errorf("Expected CompressedSize64 = 4000000000, got %d", fh.CompressedSize64)
+		}
 	}
 }
 

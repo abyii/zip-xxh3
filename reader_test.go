@@ -604,3 +604,47 @@ func TestIssue11146(t *testing.T) {
 	}
 	r.Close()
 }
+
+func TestZip64DirectoryHeaderPartial(t *testing.T) {
+	// Construct a directory header where only the headerOffset is 64-bit.
+	var buf bytes.Buffer
+	// central file header signature (4 bytes)
+	buf.Write([]byte("PK\x01\x02"))
+	// version made by (2), version needed (2), flags (2), method (2)
+	buf.Write([]byte("\x14\x00\x14\x00\x00\x00\x08\x00"))
+	// mod time (2), mod date (2), crc32 (4)
+	buf.Write([]byte("\x00\x00\x00\x00\x00\x00\x00\x00"))
+	// compressed size (4) = 90
+	binary.Write(&buf, binary.LittleEndian, uint32(90))
+	// uncompressed size (4) = 100
+	binary.Write(&buf, binary.LittleEndian, uint32(100))
+	// filename len (2) = 8, extra len (2) = 12, comment len (2) = 0
+	buf.Write([]byte("\x08\x00\x0c\x00\x00\x00"))
+	// disk number start (2), internal attrs (2), external attrs (4)
+	buf.Write([]byte("\x00\x00\x00\x00\x00\x00\x00\x00"))
+	// relative offset of local header (4) = 0xFFFFFFFF (sentinel for 64-bit)
+	buf.Write([]byte("\xff\xff\xff\xff"))
+	// file name (8 bytes)
+	buf.WriteString("test.txt")
+	// extra field (12 bytes): tag (2) = zip64ExtraId, size (2) = 8, payload (8) = 5 billion offset
+	binary.Write(&buf, binary.LittleEndian, uint16(zip64ExtraId))
+	binary.Write(&buf, binary.LittleEndian, uint16(8))
+	binary.Write(&buf, binary.LittleEndian, uint64(5000000000))
+
+	var f File
+	err := readDirectoryHeader(&f, bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readDirectoryHeader failed: %v", err)
+	}
+
+	if f.UncompressedSize64 != 100 {
+		t.Errorf("Expected UncompressedSize64 = 100, got %d", f.UncompressedSize64)
+	}
+	if f.CompressedSize64 != 90 {
+		t.Errorf("Expected CompressedSize64 = 90, got %d", f.CompressedSize64)
+	}
+	if f.headerOffset != 5000000000 {
+		t.Errorf("Expected headerOffset = 5000000000, got %d", f.headerOffset)
+	}
+}
+

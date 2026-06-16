@@ -39,7 +39,7 @@ func ReadLocalFileHeader(r io.Reader) (*FileHeader, error) {
 		return nil, err
 	}
 
-	return &FileHeader{
+	fh := &FileHeader{
 		Name:               string(nameBytes),
 		ReaderVersion:      readerVersion,
 		Flags:              flags,
@@ -52,7 +52,38 @@ func ReadLocalFileHeader(r io.Reader) (*FileHeader, error) {
 		CompressedSize64:   uint64(compressedSizeVal),
 		UncompressedSize64: uint64(uncompressedSizeVal),
 		Extra:              extraBytes,
-	}, nil
+	}
+	parseLFHZip64Extra(fh)
+	return fh, nil
+}
+
+func parseLFHZip64Extra(fh *FileHeader) {
+	if len(fh.Extra) == 0 {
+		return
+	}
+	b := readBuf(fh.Extra)
+	for len(b) >= 4 {
+		tag := b.uint16()
+		size := b.uint16()
+		if int(size) > len(b) {
+			return
+		}
+		eb := readBuf(b[:size])
+		if tag == zip64ExtraId {
+			if fh.UncompressedSize == ^uint32(0) {
+				if len(eb) >= 8 {
+					fh.UncompressedSize64 = eb.uint64()
+				}
+			}
+			if fh.CompressedSize == ^uint32(0) {
+				if len(eb) >= 8 {
+					fh.CompressedSize64 = eb.uint64()
+				}
+			}
+			return
+		}
+		b = b[size:]
+	}
 }
 
 // DataDescriptor represents a ZIP data descriptor structure found after the file data.
