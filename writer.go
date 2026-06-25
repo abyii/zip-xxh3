@@ -322,6 +322,9 @@ func newFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, error) 
 				return nil, err
 			}
 			sw = ew
+			if closer, ok := ew.(io.Closer); ok {
+				fw.enc = closer
+			}
 		} else {
 			// we have a password and need to encrypt.
 			fh.writeWinZipExtra()
@@ -331,6 +334,9 @@ func newFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, error) 
 				return nil, err
 			}
 			sw = ew
+			if closer, ok := ew.(io.Closer); ok {
+				fw.enc = closer
+			}
 		}
 	}
 
@@ -422,6 +428,7 @@ type fileWriter struct {
 	closed     bool
 	partWriter io.Writer
 	raw        bool
+	enc        io.Closer
 
 	hmac hash.Hash // possible hmac used for authentication when encrypting
 }
@@ -444,6 +451,11 @@ func (w *fileWriter) Close() error {
 	w.closed = true
 	if err := w.comp.Close(); err != nil {
 		return err
+	}
+	if w.enc != nil {
+		if err := w.enc.Close(); err != nil {
+			return err
+		}
 	}
 	// if encrypted grab the hmac and write it out
 	if w.header.IsEncrypted() && w.header.encryption != StandardEncryption {

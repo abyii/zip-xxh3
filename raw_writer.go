@@ -80,6 +80,9 @@ func newRawFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, erro
 				return nil, err
 			}
 			sw = ew
+			if closer, ok := ew.(io.Closer); ok {
+				fw.enc = closer
+			}
 		} else {
 			// we have a password and need to encrypt.
 			fh.writeWinZipExtra()
@@ -89,6 +92,9 @@ func newRawFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, erro
 				return nil, err
 			}
 			sw = ew
+			if closer, ok := ew.(io.Closer); ok {
+				fw.enc = closer
+			}
 		}
 	}
 

@@ -258,3 +258,56 @@ func TestZipCrypto(t *testing.T) {
 		t.Errorf("Expected the unzipped contents to equal '%s', but was '%s' instead", contents, res.Bytes())
 	}
 }
+
+func TestPasswordWriteZeroBytes(t *testing.T) {
+	methods := []struct {
+		method uint16
+		level  int
+	}{
+		{Deflate, -1},
+		{Store, 0},
+	}
+
+	for _, m := range methods {
+		for _, enc := range []EncryptionMethod{StandardEncryption, AES128Encryption, AES192Encryption, AES256Encryption} {
+			raw := new(bytes.Buffer)
+			zipw := NewWriter(raw)
+			_, err := zipw.Create("empty.txt", m.method, m.level, enc, "golang")
+			if err != nil {
+				t.Fatalf("Expected to create a new FileHeader for method %d, enc %d: %v", m.method, enc, err)
+			}
+			// Write nothing (0 bytes)
+			if err := zipw.Close(); err != nil {
+				t.Fatalf("Expected to close writer: %v", err)
+			}
+
+			// Read the zip back
+			zipr, err := NewReader(bytes.NewReader(raw.Bytes()), int64(raw.Len()))
+			if err != nil {
+				t.Fatalf("Expected to open new zip reader for method %d, enc %d: %v", m.method, enc, err)
+			}
+			if len(zipr.File) != 1 {
+				t.Fatalf("Expected 1 file, got %d", len(zipr.File))
+			}
+			f := zipr.File[0]
+			if f.UncompressedSize64 != 0 {
+				t.Errorf("Expected UncompressedSize64 to be 0, but got %d", f.UncompressedSize64)
+			}
+			// Windows size/underflow check: compressed size must not underflow
+			// Let's verify decryption of the 0-byte file works properly
+			f.SetPassword("golang")
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatalf("Expected f.Open() to succeed for method %d, enc %d: %v", m.method, enc, err)
+			}
+			buf, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				t.Errorf("Expected to read f successfully for method %d, enc %d: %v", m.method, enc, err)
+			}
+			if len(buf) != 0 {
+				t.Errorf("Expected 0 bytes, but read %d bytes: %v", len(buf), buf)
+			}
+		}
+	}
+}

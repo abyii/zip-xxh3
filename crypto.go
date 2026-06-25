@@ -374,6 +374,20 @@ func (ew *encryptionWriter) Write(p []byte) (int, error) {
 	return ew.es.Write(p)
 }
 
+func (ew *encryptionWriter) Close() error {
+	if ew.first {
+		ew.first = false
+		// must write out the salt and pwv first unencrypted
+		_, err1 := ew.w.Write(ew.salt)
+		_, err2 := ew.w.Write(ew.pwv)
+		if err1 != nil || err2 != nil {
+			ew.err = errors.New("zip: error writing salt or pwv")
+			return ew.err
+		}
+	}
+	return nil
+}
+
 func encryptStream(key []byte, w io.Writer) (io.Writer, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {

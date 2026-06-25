@@ -101,6 +101,24 @@ func (z *zipCryptoWriter) Write(p []byte) (n int, err error) {
 	return z.w.Write(z.z.Encrypt(p))
 }
 
+func (z *zipCryptoWriter) Close() error {
+	if z.first {
+		z.first = false
+		header := []byte{0xF8, 0x53, 0xCF, 0x05, 0x2D, 0xDD, 0xAD, 0xC8, 0x66, 0x3F, 0x8C, 0xAC}
+		header = z.z.Encrypt(header)
+
+		crc := z.fw.ModifiedTime
+		header[10] = byte(crc)
+		header[11] = byte(crc >> 8)
+
+		z.z.init()
+		if _, err := z.w.Write(z.z.Encrypt(header)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func ZipCryptoEncryptor(i io.Writer, pass passwordFn, fw *fileWriter) (io.Writer, error)  {
 	z := NewZipCrypto(pass())
 	zc := &zipCryptoWriter{i, z, true, fw}
