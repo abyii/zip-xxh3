@@ -2,6 +2,7 @@ package zip
 
 import (
 	"bytes"
+	"hash/crc32"
 	"io"
 	"path/filepath"
 	"testing"
@@ -309,5 +310,104 @@ func TestPasswordWriteZeroBytes(t *testing.T) {
 				t.Errorf("Expected 0 bytes, but read %d bytes: %v", len(buf), buf)
 			}
 		}
+	}
+}
+
+func TestZipCryptoNoDataDescriptor(t *testing.T) {
+	contents := []byte("Hello ZipCrypto without Data Descriptor!")
+	raw := new(bytes.Buffer)
+	zipw := NewWriter(raw)
+
+	fh := &FileHeader{
+		Name:   "hello_nodesc.txt",
+		Method: Store,
+		CRC32:  crc32.ChecksumIEEE(contents),
+	}
+	fh.SetPassword("golang")
+	fh.SetEncryptionMethod(StandardEncryption)
+	// Clear bit 3 (Data Descriptor)
+	fh.Flags &^= 0x8
+
+	w, err := zipw.CreateHeader(fh)
+	if err != nil {
+		t.Fatalf("Failed to create header: %v", err)
+	}
+	if _, err := w.Write(contents); err != nil {
+		t.Fatalf("Failed to write contents: %v", err)
+	}
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close zip writer: %v", err)
+	}
+
+	// Read back and verify
+	zipr, err := NewReader(bytes.NewReader(raw.Bytes()), int64(raw.Len()))
+	if err != nil {
+		t.Fatalf("Failed to open reader: %v", err)
+	}
+	if len(zipr.File) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(zipr.File))
+	}
+	f := zipr.File[0]
+	f.SetPassword("golang")
+	rc, err := f.Open()
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	buf, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if !bytes.Equal(contents, buf) {
+		t.Errorf("Content mismatch: got %q, want %q", buf, contents)
+	}
+}
+
+func TestZipCryptoZeroModifiedTime(t *testing.T) {
+	contents := []byte("Test DR 3 bytes test payload")
+	raw := new(bytes.Buffer)
+	zipw := NewWriter(raw)
+
+	fh := &FileHeader{
+		Name:         "Test DR",
+		Method:       Deflate,
+		ModifiedTime: 0,
+		ModifiedDate: 0,
+	}
+	fh.SetPassword("supersecret")
+	fh.SetEncryptionMethod(StandardEncryption)
+
+	w, err := zipw.CreateHeader(fh)
+	if err != nil {
+		t.Fatalf("Failed to create header: %v", err)
+	}
+	if _, err := w.Write(contents); err != nil {
+		t.Fatalf("Failed to write contents: %v", err)
+	}
+	if err := zipw.Close(); err != nil {
+		t.Fatalf("Failed to close zip writer: %v", err)
+	}
+
+	// Read back and verify
+	zipr, err := NewReader(bytes.NewReader(raw.Bytes()), int64(raw.Len()))
+	if err != nil {
+		t.Fatalf("Failed to open reader: %v", err)
+	}
+	if len(zipr.File) != 1 {
+		t.Fatalf("Expected 1 file, got %d", len(zipr.File))
+	}
+	f := zipr.File[0]
+	f.SetPassword("supersecret")
+	rc, err := f.Open()
+	if err != nil {
+		t.Fatalf("Failed to open file: %v", err)
+	}
+	buf, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if !bytes.Equal(contents, buf) {
+		t.Errorf("Content mismatch: got %q, want %q", buf, contents)
 	}
 }

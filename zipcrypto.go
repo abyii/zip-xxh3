@@ -1,9 +1,9 @@
 package zip
 
 import (
-	"io"
 	"bytes"
 	"hash/crc32"
+	"io"
 )
 
 type ZipCrypto struct {
@@ -83,40 +83,51 @@ type zipCryptoWriter struct {
 	fw    *fileWriter
 }
 
+func (z *zipCryptoWriter) writeHeader() error {
+	if !z.first {
+		return nil
+	}
+	z.first = false
+	
+	// PKWARE ZipCrypto requires a 12-byte encryption header at the start of each payload.
+	// The first 10 bytes are pseudo-random filler bytes, and the 11th and 12th bytes (indices 10 and 11)
+	// serve as check bytes for password verification upon extraction.
+	// We use a pre-defined 12-byte template; encrypting it below XORs it with the passphrase cipher state,
+	// rendering the output header bytes pseudo-random while embedding the required check bytes at indices 10 & 11.
+	header := []byte{0xF8, 0x53, 0xCF, 0x05, 0x2D, 0xDD, 0xAD, 0xC8, 0x66, 0x3F, 0x8C, 0xAC}
+
+	var flags uint16
+	var modTime uint16
+	var crc32Val uint32
+	if z.fw != nil {
+		flags = z.fw.Flags
+		modTime = z.fw.ModifiedTime
+		crc32Val = z.fw.CRC32
+	}
+
+	if flags&0x0008 != 0 {
+		header[10] = byte(modTime)
+		header[11] = byte(modTime >> 8)
+	} else {
+		header[10] = byte(crc32Val >> 16)
+		header[11] = byte(crc32Val >> 24)
+	}
+
+	if _, err := z.w.Write(z.z.Encrypt(header)); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (z *zipCryptoWriter) Write(p []byte) (n int, err error) {
-	if z.first {
-		z.first = false
-		header := []byte{0xF8, 0x53, 0xCF, 0x05, 0x2D, 0xDD, 0xAD, 0xC8, 0x66, 0x3F, 0x8C, 0xAC}
-		header = z.z.Encrypt(header)
-
-		crc := z.fw.ModifiedTime
-		header[10] = byte(crc)
-		header[11] = byte(crc >> 8)
-
-		z.z.init()
-		if _, err = z.w.Write(z.z.Encrypt(header)); err != nil {
-			return 0, err
-		}
+	if err := z.writeHeader(); err != nil {
+		return 0, err
 	}
 	return z.w.Write(z.z.Encrypt(p))
 }
 
 func (z *zipCryptoWriter) Close() error {
-	if z.first {
-		z.first = false
-		header := []byte{0xF8, 0x53, 0xCF, 0x05, 0x2D, 0xDD, 0xAD, 0xC8, 0x66, 0x3F, 0x8C, 0xAC}
-		header = z.z.Encrypt(header)
-
-		crc := z.fw.ModifiedTime
-		header[10] = byte(crc)
-		header[11] = byte(crc >> 8)
-
-		z.z.init()
-		if _, err := z.w.Write(z.z.Encrypt(header)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return z.writeHeader()
 }
 
 func ZipCryptoEncryptor(i io.Writer, pass passwordFn, fw *fileWriter) (io.Writer, error)  {
@@ -159,4 +170,4 @@ func NewZipCryptoDecryptReader(r io.Reader, password []byte) io.Reader {
 		z:     NewZipCrypto(password),
 		first: true,
 	}
-}
+}
