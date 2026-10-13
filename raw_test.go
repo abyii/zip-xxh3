@@ -102,8 +102,9 @@ func TestNewZipCryptoDecryptReader(t *testing.T) {
 	stream.Write(encHeader)
 	stream.Write(encData)
 
-	// Decrypt using NewZipCryptoDecryptReader
-	decReader := NewZipCryptoDecryptReader(&stream, password)
+	// Decrypt using NewZipCryptoDecryptReader; with bit 3 set the check byte
+	// (header[11] == 0x0c) is the high byte of the modification time.
+	decReader := NewVerifiedZipCryptoDecryptReader(&stream, password, &FileHeader{Flags: 0x8, ModifiedTime: 0x0c00})
 	decrypted, err := io.ReadAll(decReader)
 	if err != nil {
 		t.Fatalf("Failed to read from decrypt reader: %v", err)

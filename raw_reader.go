@@ -1,7 +1,6 @@
 package zip
 
 import (
-	"bufio"
 	"encoding/binary"
 	"io"
 )
@@ -93,130 +92,118 @@ type DataDescriptor struct {
 	UncompressedSize64 uint64
 }
 
-type rawPartRingBuffer struct {
-	buf  [24]byte
-	head int
-	tail int
-	size int
-}
+// descriptorStripperBufSize is the read buffer of a descriptorStripper; it
+// must comfortably exceed dataDescriptor64Len.
+const descriptorStripperBufSize = 64 << 10
 
-func (r *rawPartRingBuffer) Push(b byte) (byte, bool) {
-	if r.size == 24 {
-		popped := r.buf[r.head]
-		r.buf[r.head] = b
-		r.head = (r.head + 1) % 24
-		r.tail = (r.tail + 1) % 24
-		return popped, true
-	}
-	r.buf[r.tail] = b
-	r.tail = (r.tail + 1) % 24
-	r.size++
-	return 0, false
-}
-
-func (r *rawPartRingBuffer) Bytes() []byte {
-	out := make([]byte, r.size)
-	for i := 0; i < r.size; i++ {
-		out[i] = r.buf[(r.head+i)%24]
-	}
-	return out
-}
-
+// descriptorStripper passes through the payload of a raw file part (the bytes
+// following the local file header) and, if hasDescriptor is set, strips the
+// trailing data descriptor, which is parsed into desc once EOF is reached.
+// Only the last dataDescriptor64Len bytes are held back, so memory use is
+// constant regardless of the payload size.
 type descriptorStripper struct {
-	r             *bufio.Reader
-	ring          *rawPartRingBuffer
+	r             io.Reader
 	hasDescriptor bool
+	buf           []byte
+	start, end    int   // pending bytes are buf[start:end]
+	emitted       int64 // payload bytes returned so far
+	eof           bool
+	err           error // sticky read error
 	desc          *DataDescriptor
-	eofReached    bool
-	poppedBuf     []byte
 }
 
 func newDescriptorStripper(r io.Reader, hasDescriptor bool) *descriptorStripper {
 	return &descriptorStripper{
-		r:             bufio.NewReader(r),
-		ring:          new(rawPartRingBuffer),
+		r:             r,
 		hasDescriptor: hasDescriptor,
+		buf:           make([]byte, descriptorStripperBufSize),
 	}
 }
 
-func (ds *descriptorStripper) Read(p []byte) (n int, err error) {
+// holdBack returns how many pending bytes may still belong to the descriptor.
+func (ds *descriptorStripper) holdBack() int {
+	if ds.hasDescriptor && !ds.eof {
+		return dataDescriptor64Len
+	}
+	return 0
+}
+
+func (ds *descriptorStripper) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
-
-	if len(ds.poppedBuf) > 0 {
-		n = copy(p, ds.poppedBuf)
-		ds.poppedBuf = ds.poppedBuf[n:]
-		return n, nil
-	}
-
-	if ds.eofReached {
-		return 0, io.EOF
-	}
-
-	var temp [4096]byte
 	for {
-		rn, rerr := ds.r.Read(temp[:])
-		for i := 0; i < rn; i++ {
-			popped, ok := ds.ring.Push(temp[i])
-			if ok {
-				ds.poppedBuf = append(ds.poppedBuf, popped)
-			}
+		if avail := ds.end - ds.start - ds.holdBack(); avail > 0 {
+			n := copy(p, ds.buf[ds.start:ds.start+avail])
+			ds.start += n
+			ds.emitted += int64(n)
+			return n, nil
 		}
-
-		if rerr != nil {
-			if rerr == io.EOF {
-				ds.eofReached = true
-				break
-			}
-			return 0, rerr
+		if ds.eof {
+			return 0, io.EOF
 		}
-
-		if len(ds.poppedBuf) > 0 {
-			break
+		if ds.err != nil {
+			return 0, ds.err
 		}
-	}
-
-	if ds.eofReached {
-		windowBytes := ds.ring.Bytes()
-		var descStart = -1
-		if ds.hasDescriptor {
-			if len(windowBytes) >= 24 && binary.LittleEndian.Uint32(windowBytes[len(windowBytes)-24:len(windowBytes)-20]) == dataDescriptorSignature {
-				descStart = len(windowBytes) - 24
-			} else if len(windowBytes) >= 16 && binary.LittleEndian.Uint32(windowBytes[len(windowBytes)-16:len(windowBytes)-12]) == dataDescriptorSignature {
-				descStart = len(windowBytes) - 16
-			}
+		// At most holdBack bytes are pending: move them to the front and refill.
+		if ds.start > 0 {
+			ds.end = copy(ds.buf, ds.buf[ds.start:ds.end])
+			ds.start = 0
 		}
-
-		var limit = len(windowBytes)
-		if descStart >= 0 {
-			limit = descStart
-		}
-
-		for i := 0; i < limit; i++ {
-			ds.poppedBuf = append(ds.poppedBuf, windowBytes[i])
-		}
-
-		if descStart >= 0 {
-			descBytes := windowBytes[descStart:]
-			ds.desc = new(DataDescriptor)
-			if len(descBytes) == 24 {
-				ds.desc.CRC32 = binary.LittleEndian.Uint32(descBytes[4:8])
-				ds.desc.CompressedSize64 = binary.LittleEndian.Uint64(descBytes[8:16])
-				ds.desc.UncompressedSize64 = binary.LittleEndian.Uint64(descBytes[16:24])
-			} else if len(descBytes) == 16 {
-				ds.desc.CRC32 = binary.LittleEndian.Uint32(descBytes[4:8])
-				ds.desc.CompressedSize64 = uint64(binary.LittleEndian.Uint32(descBytes[8:12]))
-				ds.desc.UncompressedSize64 = uint64(binary.LittleEndian.Uint32(descBytes[12:16]))
-			}
+		n, err := ds.r.Read(ds.buf[ds.end:])
+		ds.end += n
+		if err == io.EOF {
+			ds.eof = true
+			ds.parseDescriptor()
+		} else if err != nil {
+			ds.err = err
 		}
 	}
+}
 
-	if len(ds.poppedBuf) > 0 {
-		n = copy(p, ds.poppedBuf)
-		ds.poppedBuf = ds.poppedBuf[n:]
-		return n, nil
+// parseDescriptor looks for the data descriptor at the end of the payload.
+// Both 32 and 64-bit size variants, with or without signature, are accepted;
+// a candidate is only taken if its compressed size equals the number of
+// payload bytes preceding it, which rules out data that merely happens to
+// contain the signature.
+func (ds *descriptorStripper) parseDescriptor() {
+	if !ds.hasDescriptor {
+		return
 	}
-
-	return 0, io.EOF
+	tail := ds.buf[ds.start:ds.end]
+	total := ds.emitted + int64(len(tail))
+	for _, c := range [...]struct {
+		size       int
+		sig, zip64 bool
+	}{
+		{dataDescriptor64Len, true, true},
+		{dataDescriptorLen, true, false},
+		{dataDescriptor64Len - 4, false, true},
+		{dataDescriptorLen - 4, false, false},
+	} {
+		if len(tail) < c.size {
+			continue
+		}
+		d := tail[len(tail)-c.size:]
+		if c.sig {
+			if binary.LittleEndian.Uint32(d) != dataDescriptorSignature {
+				continue
+			}
+			d = d[4:]
+		}
+		desc := DataDescriptor{CRC32: binary.LittleEndian.Uint32(d)}
+		if c.zip64 {
+			desc.CompressedSize64 = binary.LittleEndian.Uint64(d[4:])
+			desc.UncompressedSize64 = binary.LittleEndian.Uint64(d[12:])
+		} else {
+			desc.CompressedSize64 = uint64(binary.LittleEndian.Uint32(d[4:]))
+			desc.UncompressedSize64 = uint64(binary.LittleEndian.Uint32(d[8:]))
+		}
+		if desc.CompressedSize64 != uint64(total)-uint64(c.size) {
+			continue
+		}
+		ds.desc = &desc
+		ds.end -= c.size
+		return
+	}
 }

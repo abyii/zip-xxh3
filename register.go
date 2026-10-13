@@ -6,6 +6,7 @@ package zip
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -22,21 +23,32 @@ type Compressor func(io.Writer) (io.WriteCloser, error)
 // when they're finished reading.
 type Decompressor func(io.Reader) io.ReadCloser
 
-var flateWriterPool sync.Pool
+// flateWriterPools holds one pool per compression level: flate.Writer.Reset
+// keeps the level the writer was created with, so writers must not be shared
+// across levels.
+var flateWriterPools [flate.BestCompression - flate.HuffmanOnly + 1]sync.Pool
 
-func newFlateWriter(w io.Writer, level int) io.WriteCloser {
-	fw, ok := flateWriterPool.Get().(*flate.Writer)
+func newFlateWriter(w io.Writer, level int) (io.WriteCloser, error) {
+	if level < flate.HuffmanOnly || level > flate.BestCompression {
+		return nil, fmt.Errorf("zip: invalid compression level %d", level)
+	}
+	pool := &flateWriterPools[level-flate.HuffmanOnly]
+	fw, ok := pool.Get().(*flate.Writer)
 	if ok {
 		fw.Reset(w)
 	} else {
-		fw, _ = flate.NewWriter(w, level)
+		var err error
+		if fw, err = flate.NewWriter(w, level); err != nil {
+			return nil, err
+		}
 	}
-	return &pooledFlateWriter{fw: fw}
+	return &pooledFlateWriter{fw: fw, pool: pool}, nil
 }
 
 type pooledFlateWriter struct {
-	mu sync.Mutex // guards Close and Write
-	fw *flate.Writer
+	mu   sync.Mutex // guards Close and Write
+	fw   *flate.Writer
+	pool *sync.Pool
 }
 
 func (w *pooledFlateWriter) Write(p []byte) (n int, err error) {
@@ -54,8 +66,46 @@ func (w *pooledFlateWriter) Close() error {
 	var err error
 	if w.fw != nil {
 		err = w.fw.Close()
-		flateWriterPool.Put(w.fw)
+		w.pool.Put(w.fw)
 		w.fw = nil
+	}
+	return err
+}
+
+var flateReaderPool sync.Pool
+
+func newFlateReader(r io.Reader) io.ReadCloser {
+	fr, ok := flateReaderPool.Get().(io.ReadCloser)
+	if ok {
+		fr.(flate.Resetter).Reset(r, nil)
+	} else {
+		fr = flate.NewReader(r)
+	}
+	return &pooledFlateReader{fr: fr}
+}
+
+type pooledFlateReader struct {
+	mu sync.Mutex // guards Close and Read
+	fr io.ReadCloser
+}
+
+func (r *pooledFlateReader) Read(p []byte) (n int, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fr == nil {
+		return 0, errors.New("Read after Close")
+	}
+	return r.fr.Read(p)
+}
+
+func (r *pooledFlateReader) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var err error
+	if r.fr != nil {
+		err = r.fr.Close()
+		flateReaderPool.Put(r.fr)
+		r.fr = nil
 	}
 	return err
 }
@@ -102,7 +152,7 @@ func compressor(method uint16, level int) Compressor {
 	case Store:
 		return func(w io.Writer) (io.WriteCloser, error) { return &nopCloser{w}, nil }
 	case Deflate:
-		return func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w, level), nil }
+		return func(w io.Writer) (io.WriteCloser, error) { return newFlateWriter(w, level) }
 	default:
 		return compressors[method]
 	}
@@ -115,7 +165,7 @@ func decompressor(method uint16) Decompressor {
 	case Store:
 		return io.NopCloser
 	case Deflate:
-		return flate.NewReader
+		return newFlateReader
 	default:
 		return decompressors[method]
 	}

@@ -323,7 +323,7 @@ func readTestZip(t *testing.T, zt ZipTest) {
 	// test simultaneous reads
 	n := 0
 	done := make(chan bool)
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		for j, ft := range zt.File {
 			go func(j int, ft ZipTestFile) {
 				readTestFile(t, zt, ft, z.File[j])
@@ -647,4 +647,3 @@ func TestZip64DirectoryHeaderPartial(t *testing.T) {
 		t.Errorf("Expected headerOffset = 5000000000, got %d", f.headerOffset)
 	}
 }
-

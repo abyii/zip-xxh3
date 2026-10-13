@@ -23,6 +23,7 @@ See: http://www.winzip.com/aes_info.htm
 package zip
 
 import (
+	"encoding/binary"
 	"os"
 	"path"
 	"time"
@@ -32,6 +33,10 @@ import (
 const (
 	Store   uint16 = 0
 	Deflate uint16 = 8
+
+	// winzipAesMethod is the compression method recorded for WinZip AES
+	// entries; the real method lives in the AES extra field.
+	winzipAesMethod uint16 = 99
 )
 
 const (
@@ -138,7 +143,7 @@ func (fi headerFileInfo) Size() int64 {
 func (fi headerFileInfo) IsDir() bool        { return fi.Mode().IsDir() }
 func (fi headerFileInfo) ModTime() time.Time { return fi.fh.ModTime() }
 func (fi headerFileInfo) Mode() os.FileMode  { return fi.fh.Mode() }
-func (fi headerFileInfo) Sys() interface{}   { return fi.fh }
+func (fi headerFileInfo) Sys() any           { return fi.fh }
 
 // FileInfoHeader creates a partially-populated FileHeader from an
 // os.FileInfo.
@@ -261,9 +266,37 @@ func (h *FileHeader) SetMode(mode os.FileMode) {
 	}
 }
 
-// isZip64 reports whether the file size exceeds the 32 bit limit
+// isZip64 reports whether the file size needs zip64 fields. A 32-bit size of
+// 0xFFFFFFFF is reserved to mean "see the zip64 extra field", so that value
+// itself must be stored as zip64.
 func (fh *FileHeader) isZip64() bool {
-	return fh.CompressedSize64 > uint32max || fh.UncompressedSize64 > uint32max
+	return fh.CompressedSize64 >= uint32max || fh.UncompressedSize64 >= uint32max
+}
+
+// removeExtraField returns extra without any field tagged id. If nothing is
+// removed extra is returned as is; otherwise the result is a new slice.
+// Malformed trailing bytes are preserved verbatim.
+func removeExtraField(extra []byte, id uint16) []byte {
+	var out []byte
+	removed := false
+	b := extra
+	for len(b) >= 4 {
+		tag := binary.LittleEndian.Uint16(b)
+		n := 4 + int(binary.LittleEndian.Uint16(b[2:]))
+		if n > len(b) {
+			break
+		}
+		if tag == id {
+			removed = true
+		} else {
+			out = append(out, b[:n]...)
+		}
+		b = b[n:]
+	}
+	if !removed {
+		return extra
+	}
+	return append(out, b...)
 }
 
 func msdosModeToFileMode(m uint32) (mode os.FileMode) {

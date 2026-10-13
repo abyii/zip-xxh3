@@ -188,7 +188,7 @@ Stream Filtering allows you to parse a zip archive and efficiently filter out fi
 
 **Functions:**
 
-*   `FilterZipStream(r *Reader, stream io.Reader, w io.Writer, filter func(*File) bool) error`: Processes the files inside the `zip.Reader` and efficiently streams the exact original bytes from `stream` into `w` if they evaluate to true using the `filter` function.
+*   `FilterZipStream(r *Reader, stream io.Reader, w io.Writer, filter func(*File) bool) error`: Processes the files inside the `zip.Reader` and efficiently streams the exact original bytes from `stream` into `w` if they evaluate to true using the `filter` function. If no file matches, an empty (but valid) archive is written.
 
 **Example:**
 
@@ -251,10 +251,12 @@ You can also dynamically override metadata fields (such as file names, comments,
 
 #### Functions
 
-*   `CopyRawPart(src io.Reader, oldPassword, newPassword string, modifyHeader func(*OverridableFileHeader)) error`: Reads a raw file part from `src`, decrypts it using `oldPassword` (if encrypted with ZipCrypto), re-encrypts it using `newPassword` (if provided), and streams it directly to the writer. It uses the `modifyHeader` callback to allow safe metadata overrides before writing.
+*   `CopyRawPart(src io.Reader, oldPassword, newPassword string, modifyHeader func(*OverridableFileHeader)) error`: Reads a raw file part from `src`, decrypts it using `oldPassword` (if encrypted with ZipCrypto), re-encrypts it using `newPassword` (if provided), and streams it directly to the writer. It uses the `modifyHeader` callback to allow safe metadata overrides before writing. An encrypted source requires `oldPassword`; a wrong one returns `zip.ErrPassword` before anything is written. WinZip AES sources are rejected.
 *   `CreateRaw(fh *FileHeader) (io.Writer, error)`: Low-level API that registers a file entry from pre-compressed metadata and returns a writer to which raw/compressed payload bytes can be written (encrypting them on-the-fly if a password is set on the header).
 *   `ReadLocalFileHeader(r io.Reader) (*FileHeader, error)`: Decodes a Local File Header directly from a stream, returning a partially populated `FileHeader` with the metadata (name, flags, method, extra) of the part.
-*   `NewZipCryptoDecryptReader(r io.Reader, password []byte) io.Reader`: Returns a stateful streaming decryptor that consumes standard ZipCrypto encrypted bytes from `r` and decrypts them on the fly.
+*   `NewZipCryptoDecryptReader(r io.Reader, password []byte) io.Reader`: Returns a stateful streaming decryptor that consumes standard ZipCrypto encrypted bytes (12-byte encryption header + data) from `r` and decrypts them on the fly. It does not verify the password; prefer `NewVerifiedZipCryptoDecryptReader`.
+*   `NewVerifiedZipCryptoDecryptReader(r io.Reader, password []byte, fh *FileHeader) io.Reader`: Like `NewZipCryptoDecryptReader`, but verifies the password check byte. `fh` is the header returned by `ReadLocalFileHeader`; its `Flags`, `ModifiedTime` and `CRC32` determine the check byte (APPNOTE 6.1.6). The first `Read` returns `zip.ErrPassword` if it does not match. The check byte rejects only 255/256 of wrong passwords, so verify the CRC-32 of the decompressed output as well.
+*   `(*File).HeaderOffset() int64`: Returns the offset of an entry's Local File Header within the archive (no I/O). Combined with the next entry's offset (or the central directory offset), it delimits the entry's raw byte range for range-based copying.
 
 #### Overridable File Header Struct
 

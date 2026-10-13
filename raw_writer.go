@@ -4,6 +4,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
+	"math"
 
 	"github.com/zeebo/xxh3"
 )
@@ -29,12 +30,12 @@ func (w *Writer) CreateRaw(fh *FileHeader) (io.Writer, error) {
 		FileHeader: fh,
 		offset:     uint64(w.cw.count),
 	}
-	w.dir = append(w.dir, h)
 
 	fw, err := newRawFileWriter(fh, h, w.cw)
 	if err != nil {
 		return nil, err
 	}
+	w.dir = append(w.dir, h)
 
 	w.last = fw
 	return fw, nil
@@ -42,17 +43,17 @@ func (w *Writer) CreateRaw(fh *FileHeader) (io.Writer, error) {
 
 // CreateRawFileParts adds a file part to the detached zip file using the provided FileHeader.
 func (w *Writer) CreateRawFileParts(fh *FileHeader, order int, partWriter io.Writer) (io.WriteCloser, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	h := &header{
 		FileHeader: fh,
 		order:      order,
 	}
 
-	w.dir = append(w.dir, h)
-
-	return newRawFileWriter(fh, h, partWriter)
+	fw, err := newRawFileWriter(fh, h, partWriter)
+	if err != nil {
+		return nil, err
+	}
+	w.addDetachedHeader(h)
+	return fw, nil
 }
 
 func newRawFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, error) {
@@ -86,7 +87,7 @@ func newRawFileWriter(fh *FileHeader, h *header, w io.Writer) (*fileWriter, erro
 		} else {
 			// we have a password and need to encrypt.
 			fh.writeWinZipExtra()
-			fh.Method = 99 // ok to change, we've gotten the comp and wrote extra
+			fh.Method = winzipAesMethod // ok to change, we've gotten the comp and wrote extra
 			ew, err := newEncryptionWriter(sw, fh.password, fw, fh.aesStrength)
 			if err != nil {
 				return nil, err
@@ -129,11 +130,32 @@ type OverridableFileHeader struct {
 // It allows modifying the FileHeader metadata (such as filename, modification time, extra fields, comment,
 // or XXH3 checksum) via the optional `modifyHeader` callback before writing.
 // This operates with strictly constant memory overhead and runs synchronously.
+//
+// An encrypted source requires oldPassword; a wrong oldPassword is reported as
+// ErrPassword before anything is written. WinZip AES sources are not supported.
 func (w *Writer) CopyRawPart(src io.Reader, oldPassword, newPassword string, modifyHeader func(*OverridableFileHeader)) error {
 	fh, err := ReadLocalFileHeader(src)
 	if err != nil {
 		return err
 	}
+
+	sourceEncrypted := (fh.Flags & 0x1) != 0
+	hasDescriptor := (fh.Flags & 0x8) != 0
+	if sourceEncrypted {
+		if fh.Method == winzipAesMethod {
+			return errors.New("zip: CopyRawPart does not support AES encrypted entries")
+		}
+		if oldPassword == "" {
+			return ErrPassword
+		}
+	}
+	// The ZipCrypto check byte is derived from the source header, so capture
+	// it before any metadata override.
+	_, check := zipCryptoCheckBytes(fh.Flags, fh.ModifiedTime, fh.CRC32)
+
+	// A zip64 extra in the source local header describes the source sizes;
+	// the writer emits its own zip64 record where needed.
+	fh.Extra = removeExtraField(fh.Extra, zip64ExtraId)
 
 	override := &OverridableFileHeader{
 		Name:           fh.Name,
@@ -162,7 +184,6 @@ func (w *Writer) CopyRawPart(src io.Reader, oldPassword, newPassword string, mod
 	fh.ExternalAttrs = override.ExternalAttrs
 	fh.Extra = override.Extra
 
-	sourceEncrypted := (fh.Flags & 0x1) != 0
 	if newPassword != "" && sourceEncrypted {
 		fh.SetPassword(newPassword)
 		fh.SetEncryptionMethod(StandardEncryption)
@@ -172,24 +193,47 @@ func (w *Writer) CopyRawPart(src io.Reader, oldPassword, newPassword string, mod
 		fh.encryption = NoEncryption
 	}
 
+	// Without a descriptor the local header holds the authoritative sizes;
+	// with one, the payload runs to the end of src and ends with it.
+	var payload io.Reader
+	var stripper *descriptorStripper
+	var limited *io.LimitedReader
+	if hasDescriptor {
+		stripper = newDescriptorStripper(src, true)
+		payload = stripper
+	} else {
+		if fh.CompressedSize64 > math.MaxInt64 {
+			return ErrFormat
+		}
+		limited = &io.LimitedReader{R: src, N: int64(fh.CompressedSize64)}
+		payload = limited
+	}
+
+	if sourceEncrypted {
+		dr := newZipCryptoDecryptReader(payload, []byte(oldPassword), check, true)
+		// Reject a wrong password before writing anything.
+		if err := dr.readHeader(); err != nil {
+			return err
+		}
+		payload = dr
+	}
+
 	tw, err := w.CreateRaw(fh)
 	if err != nil {
 		return err
 	}
 
-	hasDescriptor := (fh.Flags & 0x8) != 0
-	stripper := newDescriptorStripper(src, hasDescriptor)
-
-	var decryptedSrc io.Reader = stripper
-	if oldPassword != "" && sourceEncrypted {
-		decryptedSrc = NewZipCryptoDecryptReader(stripper, []byte(oldPassword))
-	}
-
-	if _, err := io.Copy(tw, decryptedSrc); err != nil {
+	if _, err := io.Copy(tw, payload); err != nil {
 		return err
 	}
 
-	if stripper.desc != nil {
+	if limited != nil && limited.N != 0 {
+		return io.ErrUnexpectedEOF
+	}
+	if stripper != nil {
+		if stripper.desc == nil {
+			return errors.New("zip: data descriptor not found at end of raw part")
+		}
 		fh.CRC32 = stripper.desc.CRC32
 		fh.CompressedSize64 = stripper.desc.CompressedSize64
 		fh.UncompressedSize64 = stripper.desc.UncompressedSize64

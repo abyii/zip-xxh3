@@ -15,6 +15,7 @@ import (
 	"errors"
 	"hash"
 	"io"
+	"math"
 
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -130,22 +131,11 @@ func (x *ctr) XORKeyStream(dst, src []byte) {
 		if x.outUsed >= len(x.out)-x.b.BlockSize() {
 			x.refill()
 		}
-		n := xorBytes(dst, src, x.out[x.outUsed:])
+		n := subtle.XORBytes(dst, src, x.out[x.outUsed:])
 		dst = dst[n:]
 		src = src[n:]
 		x.outUsed += n
 	}
-}
-
-func xorBytes(dst, a, b []byte) int {
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
-	}
-	for i := 0; i < n; i++ {
-		dst[i] = a[i] ^ b[i]
-	}
-	return n
 }
 
 // newAuthReader returns either a buffered or streaming authentication reader.
@@ -291,7 +281,10 @@ func newDecryptionReader(r *io.SectionReader, f *File) (io.Reader, error) {
 	}
 	// grab the salt and pwvv
 	saltpwvv := make([]byte, saltLen+2)
-	if _, err := r.Read(saltpwvv); err != nil {
+	if _, err := io.ReadFull(r, saltpwvv); err != nil {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, err
 	}
 	salt := saltpwvv[:saltLen]
@@ -304,8 +297,14 @@ func newDecryptionReader(r *io.SectionReader, f *File) (io.Reader, error) {
 	if !checkPasswordVerification(pwv, pwvv) {
 		return nil, ErrPassword
 	}
+	// CompressedSize64 covers salt, pwv, encrypted data and the 10-byte
+	// authentication code; anything shorter is malformed.
+	overhead := uint64(saltLen) + 2 + 10
+	if f.CompressedSize64 < overhead || f.CompressedSize64-overhead > math.MaxInt64 {
+		return nil, ErrFormat
+	}
 	dataOff := int64(saltLen + 2)
-	dataLen := int64(f.CompressedSize64 - uint64(saltLen) - 2 - 10)
+	dataLen := int64(f.CompressedSize64 - overhead)
 	// // TODO(alex): Should the compressed sizes be fixed?
 	// // Not the ideal place to do this.
 	// f.CompressedSize64 = uint64(dataLen)
@@ -439,6 +438,13 @@ func (h *FileHeader) isAE2() bool {
 	return h.ae == 2
 }
 
+// writesAES reports whether a writer encrypts this entry with WinZip AES
+// (as opposed to ZipCrypto or no encryption). Such entries get an AE-2
+// extra field, no CRC and a data descriptor without signature.
+func (h *FileHeader) writesAES() bool {
+	return h.password != nil && h.encryption != StandardEncryption
+}
+
 func (h *FileHeader) writeWinZipExtra() {
 	// total size is 11 bytes
 	var buf [11]byte
@@ -449,7 +455,8 @@ func (h *FileHeader) writeWinZipExtra() {
 	eb.uint16(0x4541)           // "AE"
 	eb.uint8(h.aesStrength)     // aes256
 	eb.uint16(h.Method)         // original compression method
-	h.Extra = append(h.Extra, buf[:]...)
+	// Full slice expression: never append into a caller-owned backing array.
+	h.Extra = append(h.Extra[:len(h.Extra):len(h.Extra)], buf[:]...)
 }
 
 // SetEncryptionMethod sets the encryption method.
