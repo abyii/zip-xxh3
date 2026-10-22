@@ -1,6 +1,6 @@
 module github.com/abyii/zip-xxh3
 
-go 1.27
+go 1.27.3
 
 require (
 	github.com/klauspost/compress v1.20.3
